@@ -1,21 +1,11 @@
-"""Thin wrappers around Claude (answers) and Voyage (embeddings).
-
-Kept intentionally minimal — the RAG orchestration lives in app/core/rag.py.
+"""Claude answer generation. Embeddings live in app/core/embeddings.py; RAG
+orchestration lives in app/core/rag.py.
 """
 from __future__ import annotations
 
 from typing import Optional
 
 from app.core.settings import settings
-
-
-def embed_texts(texts: list[str], input_type: str = "document") -> list[list[float]]:
-    """Embed a batch of texts with Voyage AI. input_type: 'document' | 'query'."""
-    import voyageai  # imported lazily so the app boots without the key during setup
-
-    client = voyageai.Client(api_key=settings.VOYAGE_API_KEY)
-    result = client.embed(texts, model=settings.EMBEDDING_MODEL, input_type=input_type)
-    return result.embeddings
 
 
 def answer(system_prompt: str, context: str, question: str, model: Optional[str] = None) -> str:

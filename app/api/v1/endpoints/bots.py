@@ -1,14 +1,17 @@
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
 from app.api.deps import get_current_user
-from app.core import rag
+from app.core import rag, embeddings
 from app.core.settings import settings
 from app.models.user import User
 from app.models.bot import Bot
 from app.schemas.bot import BotCreate, BotOut, ChatRequest, ChatResponse
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
@@ -46,11 +49,20 @@ def chat(
 ):
     """Dashboard test harness — ask the bot a question through the RAG engine."""
     bot = _get_owned_bot(bot_id, db, user)
-    # RAG needs both an embedding key (retrieve) and an answer key (generate).
-    # Surface a clear 503 instead of a 500 when they aren't configured yet.
-    if not settings.VOYAGE_API_KEY or not settings.ANTHROPIC_API_KEY:
+    # RAG needs embeddings (retrieve) AND Claude (generate). Surface a clear 503
+    # instead of a 500 when either isn't configured yet.
+    if not embeddings.is_configured() or not settings.ANTHROPIC_API_KEY:
         raise HTTPException(
             status_code=503,
-            detail="LLM not configured: set VOYAGE_API_KEY and ANTHROPIC_API_KEY.",
+            detail="LLM not configured: set ANTHROPIC_API_KEY and VOYAGE_API_KEY "
+            "(or EMBEDDINGS_PROVIDER=fake for dev).",
         )
-    return ChatResponse(answer=rag.answer_question(db, bot, payload.question))
+    try:
+        answer = rag.answer_question(db, bot, payload.question)
+    except Exception:  # noqa: BLE001 — upstream embedding/LLM/network failure
+        logger.exception("chat failed for bot %s", bot_id)
+        raise HTTPException(
+            status_code=502,
+            detail="The assistant is temporarily unavailable. Please try again.",
+        )
+    return ChatResponse(answer=answer)

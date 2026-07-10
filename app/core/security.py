@@ -1,4 +1,3 @@
-import os
 import hashlib
 import logging
 from datetime import datetime, timedelta
@@ -6,18 +5,17 @@ from typing import Optional
 
 import bcrypt
 from jose import jwt
-from dotenv import load_dotenv
 
-# Ensure .env is loaded before reading SECRET_KEY (regardless of import order).
-load_dotenv()
+from app.core.settings import settings
 
 logger = logging.getLogger(__name__)
 
-# JWT signing key MUST come from the environment so signing here matches
-# verification everywhere else. Never hardcode it in production.
-SECRET_KEY = os.getenv("SECRET_KEY", "supersecretkey123")
-ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", 60 * 24 * 8))
+# Single source of truth for the signing key — settings enforces that it is a
+# strong value (or aborts startup in production), so signing here always matches
+# verification in app.api.deps.
+SECRET_KEY = settings.SECRET_KEY
+ALGORITHM = settings.ALGORITHM
+ACCESS_TOKEN_EXPIRE_MINUTES = settings.ACCESS_TOKEN_EXPIRE_MINUTES
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:

@@ -25,10 +25,11 @@ def get_current_user(
         user_id = payload.get("sub")
         if user_id is None:
             raise credentials_exc
-    except JWTError:
+        user_id = int(user_id)  # a validly-signed but malformed sub -> 401, not 500
+    except (JWTError, ValueError, TypeError):
         raise credentials_exc
 
-    user = db.query(User).filter(User.id == int(user_id)).first()
+    user = db.query(User).filter(User.id == user_id).first()
     if user is None or not user.is_active:
         raise credentials_exc
     return user

@@ -1,4 +1,6 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
+
+from app.core.settings import settings
 
 
 class BotCreate(BaseModel):
@@ -21,7 +23,15 @@ class BotOut(BaseModel):
 
 class ChatRequest(BaseModel):
     """Direct test endpoint — ask a bot a question without going through a channel."""
-    question: str
+    question: str = Field(min_length=1, max_length=settings.MAX_QUESTION_CHARS)
+
+    @field_validator("question")
+    @classmethod
+    def _not_blank(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("question must not be blank")
+        return v
 
 
 class ChatResponse(BaseModel):

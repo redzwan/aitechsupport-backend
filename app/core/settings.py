@@ -1,4 +1,6 @@
 import os
+import secrets
+import logging
 from dotenv import load_dotenv
 from pydantic_settings import BaseSettings
 
@@ -6,13 +8,20 @@ from pydantic_settings import BaseSettings
 # module import order.
 load_dotenv()
 
+logger = logging.getLogger(__name__)
+
+# Known-insecure placeholder that must never sign real tokens.
+_INSECURE_SECRET = "supersecretkey123"
+
 
 class Settings(BaseSettings):
     API_V1_STR: str = "/api/v1"
     PROJECT_NAME: str = "AiTechSupport API"
+    DEBUG: bool = os.getenv("DEBUG", "False").lower() == "true"
 
     # ===== Security =====
-    SECRET_KEY: str = os.getenv("SECRET_KEY", "supersecretkey123")
+    # No hardcoded fallback: a missing/placeholder key is rejected at startup below.
+    SECRET_KEY: str = os.getenv("SECRET_KEY", "")
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", 60 * 24 * 8))
 
@@ -27,10 +36,32 @@ class Settings(BaseSettings):
     ANSWER_MODEL: str = os.getenv("ANSWER_MODEL", "claude-haiku-4-5-20251001")
     FALLBACK_MODEL: str = os.getenv("FALLBACK_MODEL", "claude-opus-4-8")
 
-    # ===== Embeddings (Voyage AI) =====
+    # ===== Embeddings =====
+    # Provider: "voyage" (production) | "fake" (deterministic, offline dev/CI — NO real
+    # semantics, never use in production). "fake" lets the ingest/retrieve pipeline run
+    # without a paid API key.
+    EMBEDDINGS_PROVIDER: str = os.getenv("EMBEDDINGS_PROVIDER", "voyage")
     VOYAGE_API_KEY: str = os.getenv("VOYAGE_API_KEY", "")
     EMBEDDING_MODEL: str = os.getenv("EMBEDDING_MODEL", "voyage-3")
     EMBEDDING_DIM: int = int(os.getenv("EMBEDDING_DIM", 1024))
+    # Per-request cap for the embeddings provider (Voyage limits texts/tokens per call).
+    EMBED_BATCH_SIZE: int = int(os.getenv("EMBED_BATCH_SIZE", 128))
+
+    # ===== Chunking =====
+    CHUNK_MAX_CHARS: int = int(os.getenv("CHUNK_MAX_CHARS", 1200))
+    CHUNK_OVERLAP: int = int(os.getenv("CHUNK_OVERLAP", 150))
+    RETRIEVAL_TOP_K: int = int(os.getenv("RETRIEVAL_TOP_K", 6))
+    # Hard ceiling on a single question sent to retrieval/answer.
+    MAX_QUESTION_CHARS: int = int(os.getenv("MAX_QUESTION_CHARS", 4000))
+
+    # Max bytes accepted for an uploaded/pasted knowledge source.
+    MAX_UPLOAD_BYTES: int = int(os.getenv("MAX_UPLOAD_BYTES", 5 * 1024 * 1024))
+
+    # ===== Outbound URL fetch (knowledge crawl) =====
+    URL_FETCH_TIMEOUT: float = float(os.getenv("URL_FETCH_TIMEOUT", 15))
+    URL_FETCH_MAX_REDIRECTS: int = int(os.getenv("URL_FETCH_MAX_REDIRECTS", 5))
+    # Cap on a fetched page body (defaults to the upload cap).
+    MAX_URL_BYTES: int = int(os.getenv("MAX_URL_BYTES", 5 * 1024 * 1024))
 
     # ===== WhatsApp channel =====
     WHATSAPP_PROVIDER: str = os.getenv("WHATSAPP_PROVIDER", "meta")
@@ -53,6 +84,29 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+
+def _enforce_secret_key() -> None:
+    """Never sign JWTs with a missing or placeholder key.
+
+    In production (DEBUG=False) a weak/absent SECRET_KEY aborts startup — a
+    predictable key lets anyone forge a token for any user in any org. In dev we
+    fall back to an ephemeral random key (tokens won't survive a restart) so the
+    app still boots, with a loud warning.
+    """
+    key = settings.SECRET_KEY
+    if not key or key == _INSECURE_SECRET or len(key) < 16:
+        if not settings.DEBUG:
+            raise RuntimeError(
+                "SECRET_KEY must be set to a strong random value in production "
+                "(unset/placeholder keys allow JWT forgery). Generate one with: "
+                "python -c 'import secrets; print(secrets.token_urlsafe(48))'"
+            )
+        settings.SECRET_KEY = secrets.token_urlsafe(48)
+        logger.warning("SECRET_KEY missing/weak; using an ephemeral dev key (tokens reset on restart).")
+
+
+_enforce_secret_key()
 
 
 def cors_origins() -> list[str]:

@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Text
+from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Text, Index
 from pgvector.sqlalchemy import Vector
 
 from app.db.session import Base
@@ -39,3 +39,14 @@ class Chunk(Base):
     embedding = Column(Vector(settings.EMBEDDING_DIM), nullable=True)
 
     created_at = Column(DateTime, default=datetime.utcnow)
+
+    # HNSW ANN index for cosine similarity — keeps retrieval sub-linear as a
+    # bot's knowledge base grows (retrieve() orders by cosine_distance).
+    __table_args__ = (
+        Index(
+            "ix_chunks_embedding_hnsw",
+            "embedding",
+            postgresql_using="hnsw",
+            postgresql_ops={"embedding": "vector_cosine_ops"},
+        ),
+    )
