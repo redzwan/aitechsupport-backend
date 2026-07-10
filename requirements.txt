@@ -1,0 +1,24 @@
+fastapi
+uvicorn[standard]
+sqlalchemy
+psycopg2-binary
+pgvector
+alembic
+pydantic
+pydantic-settings
+python-dotenv
+python-jose[cryptography]
+passlib[bcrypt]
+bcrypt
+python-multipart
+aiofiles
+email-validator
+# LLM / RAG
+anthropic
+voyageai
+# Channel + billing integrations (WhatsApp Cloud API, Billplz) use plain HTTP
+httpx
+requests
+# Knowledge-base ingestion (website crawl + HTML cleaning)
+beautifulsoup4
+bleach
