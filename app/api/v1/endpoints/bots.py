@@ -4,6 +4,7 @@ from sqlalchemy.orm import Session
 from app.db.session import get_db
 from app.api.deps import get_current_user
 from app.core import rag
+from app.core.settings import settings
 from app.models.user import User
 from app.models.bot import Bot
 from app.schemas.bot import BotCreate, BotOut, ChatRequest, ChatResponse
@@ -45,4 +46,11 @@ def chat(
 ):
     """Dashboard test harness — ask the bot a question through the RAG engine."""
     bot = _get_owned_bot(bot_id, db, user)
+    # RAG needs both an embedding key (retrieve) and an answer key (generate).
+    # Surface a clear 503 instead of a 500 when they aren't configured yet.
+    if not settings.VOYAGE_API_KEY or not settings.ANTHROPIC_API_KEY:
+        raise HTTPException(
+            status_code=503,
+            detail="LLM not configured: set VOYAGE_API_KEY and ANTHROPIC_API_KEY.",
+        )
     return ChatResponse(answer=rag.answer_question(db, bot, payload.question))

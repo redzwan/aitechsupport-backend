@@ -11,15 +11,28 @@ handoff, conversation history, and usage-metered billing.
 - WhatsApp Business Cloud API (channel) · Billplz (billing)
 
 ## Local setup
+Requires **Python 3.10+** (the code uses `X | None` / `list[X]` syntax). Verified on 3.11.
+
 ```bash
-python -m venv venv && source venv/bin/activate
+# 1. venv + deps
+python3.11 -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env          # fill in secrets
-# In psql:  CREATE EXTENSION IF NOT EXISTS vector;
+
+# 2. env
+cp .env.example .env          # a local .env pointing at the Docker DB below is fine
+
+# 3. Postgres + pgvector (Docker, port 5433 — matches .env DATABASE_URL)
+chmod +x scripts/dev-db.sh
+./scripts/dev-db.sh up         # starts pgvector/pgvector:pg16 + enables the extension
+
+# 4. migrate + run
 alembic upgrade head
 uvicorn main:app --reload --port 8100
 ```
-Docs: http://localhost:8100/docs
+Docs: http://localhost:8100/docs · Health: http://localhost:8100/api/v1/health
+
+DB helpers: `./scripts/dev-db.sh {up|down|psql|reset}`.
+The RAG `/chat` endpoint returns **503** until `VOYAGE_API_KEY` and `ANTHROPIC_API_KEY` are set in `.env`.
 
 ## Layout
 ```
