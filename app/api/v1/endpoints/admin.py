@@ -207,6 +207,12 @@ def update_smtp(payload: SMTPSettingsUpdate, db: Session = Depends(get_db), admi
         "security": "SMTP_SECURITY",
         "enabled": "SMTP_ENABLED",
     }
+    if payload.security is not None:
+        sec = payload.security.strip().lower()
+        if sec not in ("tls", "ssl", "none"):
+            raise HTTPException(status_code=422, detail="security must be one of: tls, ssl, none")
+        payload.security = sec
+
     updates: dict[str, str] = {}
     for field, key in field_to_key.items():
         value = getattr(payload, field)

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import re
 import ssl
+import html
 import smtplib
 import logging
 from email.mime.text import MIMEText
@@ -25,16 +26,24 @@ logger = logging.getLogger(__name__)
 _TAG_RE = re.compile(r"<[^>]+>")
 
 
+def _port(raw: str) -> int:
+    try:
+        return int(str(raw).strip())
+    except (ValueError, TypeError):
+        logger.warning("invalid SMTP_PORT %r; using 587", raw)
+        return 587
+
+
 def smtp_config(db: Session) -> dict:
     g = config_store.get
     return {
         "host": g("SMTP_HOST"),
-        "port": int(g("SMTP_PORT", "587") or 587),
+        "port": _port(g("SMTP_PORT", "587") or "587"),
         "username": g("SMTP_USERNAME"),
         "password": g("SMTP_PASSWORD"),
         "from_email": g("SMTP_FROM_EMAIL"),
         "from_name": g("SMTP_FROM_NAME") or "AiTechSupport",
-        "security": (g("SMTP_SECURITY") or "tls").lower(),  # tls | ssl | none
+        "security": (g("SMTP_SECURITY") or "tls").strip().lower(),  # tls | ssl | none
         "enabled": (g("SMTP_ENABLED") or "false").lower() == "true",
     }
 
@@ -53,11 +62,16 @@ def _html_to_text(html: str) -> str:
     return _TAG_RE.sub("", html).strip()
 
 
-def _render(template: str, context: dict) -> str:
-    """Substitute {key} placeholders literally (no str.format attribute traversal)."""
+def _render(template: str, context: dict, escape: bool = False) -> str:
+    """Substitute {key} placeholders literally (no str.format attribute traversal).
+
+    `escape=True` HTML-escapes the substituted VALUES (not the admin-authored
+    template) so user-supplied fields can't inject markup into an HTML body.
+    """
     out = template
     for key, val in context.items():
-        out = out.replace("{" + key + "}", str(val))
+        text = html.escape(str(val)) if escape else str(val)
+        out = out.replace("{" + key + "}", text)
     return out
 
 
@@ -66,7 +80,8 @@ def render(db: Session, key: str, context: dict) -> tuple[str, str]:
     tmpl = db.query(EmailTemplate).filter(EmailTemplate.key == key, EmailTemplate.is_active.is_(True)).first()
     if not tmpl:
         raise ValueError(f"email template '{key}' not found")
-    return _render(tmpl.subject, context), _render(tmpl.body_html, context)
+    # subject is a plain-text header (CRLF-sanitized in send); body is HTML (escape values).
+    return _render(tmpl.subject, context), _render(tmpl.body_html, context, escape=True)
 
 
 def send(db: Session, to_email: str, subject: str, html: str) -> None:
@@ -93,7 +108,9 @@ def send(db: Session, to_email: str, subject: str, html: str) -> None:
             s.sendmail(cfg["from_email"], [to_email], msg.as_string())
     else:
         with smtplib.SMTP(cfg["host"], cfg["port"], timeout=20) as s:
-            if cfg["security"] == "tls":
+            # Fail closed to encryption: STARTTLS for anything except an explicit "none",
+            # so a typo'd/unknown security value never sends credentials in cleartext.
+            if cfg["security"] != "none":
                 s.starttls(context=ctx)
             if cfg["username"]:
                 s.login(cfg["username"], cfg["password"])
