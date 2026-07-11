@@ -19,6 +19,7 @@ class UserProfile(BaseModel):
     email: EmailStr
     full_name: str | None = None
     role: str
+    is_platform_admin: bool = False
 
     class Config:
         from_attributes = True
