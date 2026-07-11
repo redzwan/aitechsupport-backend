@@ -7,7 +7,13 @@ from app.core.security import verify_password, get_password_hash, create_access_
 from app.api.deps import get_current_user
 from app.models.organization import Organization
 from app.models.user import User
-from app.schemas.auth import RegisterRequest, Token, UserProfile
+from app.schemas.auth import (
+    RegisterRequest,
+    Token,
+    UserProfile,
+    UpdateProfileRequest,
+    ChangePasswordRequest,
+)
 
 router = APIRouter()
 
@@ -54,3 +60,30 @@ def login(form: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get
 @router.get("/me", response_model=UserProfile)
 def me(current_user: User = Depends(get_current_user)) -> User:
     return current_user
+
+
+@router.put("/me", response_model=UserProfile)
+def update_me(
+    payload: UpdateProfileRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> User:
+    if payload.full_name is not None:
+        current_user.full_name = payload.full_name.strip() or None
+    db.commit()
+    db.refresh(current_user)
+    return current_user
+
+
+@router.post("/change-password", status_code=204)
+def change_password(
+    payload: ChangePasswordRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    if not verify_password(payload.current_password, current_user.hashed_password):
+        raise HTTPException(status_code=400, detail="Current password is incorrect")
+    if len(payload.new_password) < 6:
+        raise HTTPException(status_code=422, detail="New password must be at least 6 characters")
+    current_user.hashed_password = get_password_hash(payload.new_password)
+    db.commit()
