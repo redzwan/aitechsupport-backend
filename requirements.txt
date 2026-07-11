@@ -14,7 +14,10 @@ python-multipart
 aiofiles
 email-validator
 # LLM / RAG
-anthropic
+# Chat models are reached through OpenRouter's OpenAI-compatible API (one key,
+# many providers: Claude, GPT, gpt-oss, Mistral, Gemma, ...).
+openai
+# Embeddings (retrieval) via Voyage AI.
 voyageai
 # Channel + billing integrations (WhatsApp Cloud API, Billplz) use plain HTTP
 httpx

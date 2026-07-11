@@ -33,3 +33,10 @@ def get_current_user(
     if user is None or not user.is_active:
         raise credentials_exc
     return user
+
+
+def get_platform_admin(user: User = Depends(get_current_user)) -> User:
+    """Guard for platform-wide settings (API keys, default model)."""
+    if not user.is_platform_admin:
+        raise HTTPException(status_code=403, detail="Platform admin only")
+    return user

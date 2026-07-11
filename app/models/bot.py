@@ -16,6 +16,9 @@ class Bot(Base):
     name = Column(String, nullable=False)
     # Persona / guardrail instructions prepended to the RAG prompt.
     system_prompt = Column(Text, nullable=True)
+    # OpenRouter model id for answers (e.g. "anthropic/claude-haiku-4.5",
+    # "openai/gpt-5.4-mini"). Null -> the platform default (models_catalog).
+    chat_model = Column(String, nullable=True)
     # Shown when retrieval confidence is low, before offering human handoff.
     fallback_message = Column(Text, default="Let me connect you with a human who can help.")
     is_active = Column(Boolean, default=True, nullable=False)

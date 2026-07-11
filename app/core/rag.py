@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from sqlalchemy.orm import Session
 
-from app.core import embeddings, llm
+from app.core import embeddings, llm, models_catalog
 from app.core.settings import settings
 from app.models.knowledge import Chunk, KnowledgeSource
 from app.models.bot import Bot
@@ -39,4 +39,5 @@ def answer_question(db: Session, bot: Bot, question: str) -> str:
     if not chunks:
         return bot.fallback_message or "I don't have an answer for that yet."
     context = "\n\n---\n\n".join(c.content for c in chunks)
-    return llm.answer(bot.system_prompt or "", context, question)
+    model = models_catalog.resolve_for_bot(bot.chat_model)
+    return llm.answer(bot.system_prompt or "", context, question, model=model)

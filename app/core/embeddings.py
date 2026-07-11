@@ -15,6 +15,7 @@ import hashlib
 import math
 
 from app.core.settings import settings
+from app.core import config_store
 
 
 def _l2_normalize(vec: list[float]) -> list[float]:
@@ -33,12 +34,18 @@ def _fake_embed(text: str, dim: int) -> list[float]:
     return _l2_normalize(vec)
 
 
+def _voyage_key() -> str:
+    # admin DB setting first, then env
+    return config_store.get("VOYAGE_API_KEY")
+
+
 def _voyage_embed(texts: list[str], input_type: str) -> list[list[float]]:
     import voyageai  # lazy import so the app boots without the SDK configured
 
-    if not settings.VOYAGE_API_KEY:
+    key = _voyage_key()
+    if not key:
         raise RuntimeError("VOYAGE_API_KEY is not set (EMBEDDINGS_PROVIDER=voyage).")
-    client = voyageai.Client(api_key=settings.VOYAGE_API_KEY)
+    client = voyageai.Client(api_key=key)
     result = client.embed(texts, model=settings.EMBEDDING_MODEL, input_type=input_type)
     return result.embeddings
 
@@ -71,4 +78,4 @@ def is_configured() -> bool:
     """True when embeddings can actually run (fake always can; voyage needs a key)."""
     if settings.EMBEDDINGS_PROVIDER == "fake":
         return True
-    return bool(settings.VOYAGE_API_KEY)
+    return bool(_voyage_key())

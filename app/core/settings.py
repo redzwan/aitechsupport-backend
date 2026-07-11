@@ -31,10 +31,12 @@ class Settings(BaseSettings):
         "postgresql://ats_admin:changeme@localhost/aitechsupport_db",
     )
 
-    # ===== Anthropic / Claude =====
-    ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "")
-    ANSWER_MODEL: str = os.getenv("ANSWER_MODEL", "claude-haiku-4-5-20251001")
-    FALLBACK_MODEL: str = os.getenv("FALLBACK_MODEL", "claude-opus-4-8")
+    # ===== Chat models (via OpenRouter — one key, many providers) =====
+    # These are env fallbacks; a platform admin can override them in the DB
+    # (see config_store / admin settings) without a redeploy.
+    OPENROUTER_API_KEY: str = os.getenv("OPENROUTER_API_KEY", "")
+    OPENROUTER_BASE_URL: str = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+    DEFAULT_CHAT_MODEL: str = os.getenv("DEFAULT_CHAT_MODEL", "anthropic/claude-haiku-4.5")
 
     # ===== Embeddings =====
     # Provider: "voyage" (production) | "fake" (deterministic, offline dev/CI — NO real

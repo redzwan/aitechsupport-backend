@@ -7,6 +7,8 @@ class BotCreate(BaseModel):
     name: str
     system_prompt: str | None = None
     fallback_message: str | None = None
+    # OpenRouter model id; null -> platform default. Free text so any model works.
+    chat_model: str | None = None
 
 
 class BotOut(BaseModel):
@@ -15,6 +17,7 @@ class BotOut(BaseModel):
     name: str
     system_prompt: str | None = None
     fallback_message: str | None = None
+    chat_model: str | None = None
     is_active: bool
 
     class Config:

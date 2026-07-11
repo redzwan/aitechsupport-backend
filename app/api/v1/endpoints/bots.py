@@ -5,14 +5,20 @@ from sqlalchemy.orm import Session
 
 from app.db.session import get_db
 from app.api.deps import get_current_user
-from app.core import rag, embeddings
-from app.core.settings import settings
+from app.core import rag, embeddings, llm, models_catalog
 from app.models.user import User
 from app.models.bot import Bot
 from app.schemas.bot import BotCreate, BotOut, ChatRequest, ChatResponse
+from app.schemas.setting import ModelOption
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+@router.get("/models", response_model=list[ModelOption])
+def list_models(user: User = Depends(get_current_user)):
+    """Suggested chat models for a bot's model dropdown (any authenticated user)."""
+    return models_catalog.CHAT_MODELS
 
 
 @router.get("", response_model=list[BotOut])
@@ -49,12 +55,12 @@ def chat(
 ):
     """Dashboard test harness — ask the bot a question through the RAG engine."""
     bot = _get_owned_bot(bot_id, db, user)
-    # RAG needs embeddings (retrieve) AND Claude (generate). Surface a clear 503
-    # instead of a 500 when either isn't configured yet.
-    if not embeddings.is_configured() or not settings.ANTHROPIC_API_KEY:
+    # RAG needs embeddings (retrieve) AND a chat model via OpenRouter (generate).
+    # Surface a clear 503 instead of a 500 when either isn't configured yet.
+    if not embeddings.is_configured() or not llm.is_configured():
         raise HTTPException(
             status_code=503,
-            detail="LLM not configured: set ANTHROPIC_API_KEY and VOYAGE_API_KEY "
+            detail="LLM not configured: set OPENROUTER_API_KEY and VOYAGE_API_KEY "
             "(or EMBEDDINGS_PROVIDER=fake for dev).",
         )
     try:
