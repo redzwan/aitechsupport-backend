@@ -9,3 +9,4 @@ from app.models.conversation import Conversation, Message  # noqa: F401
 from app.models.subscription import Subscription  # noqa: F401
 from app.models.package import Package  # noqa: F401
 from app.models.setting import Setting  # noqa: F401
+from app.models.email_template import EmailTemplate  # noqa: F401

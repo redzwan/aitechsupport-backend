@@ -19,10 +19,19 @@ MANAGED_KEYS = {
     "OPENROUTER_BASE_URL": "OPENROUTER_BASE_URL",
     "VOYAGE_API_KEY": "VOYAGE_API_KEY",
     "DEFAULT_CHAT_MODEL": "DEFAULT_CHAT_MODEL",
+    # SMTP / email
+    "SMTP_HOST": "SMTP_HOST",
+    "SMTP_PORT": "SMTP_PORT",
+    "SMTP_USERNAME": "SMTP_USERNAME",
+    "SMTP_PASSWORD": "SMTP_PASSWORD",
+    "SMTP_FROM_EMAIL": "SMTP_FROM_EMAIL",
+    "SMTP_FROM_NAME": "SMTP_FROM_NAME",
+    "SMTP_SECURITY": "SMTP_SECURITY",   # tls | ssl | none
+    "SMTP_ENABLED": "SMTP_ENABLED",     # "true" | "false"
 }
 
 # Keys whose value must never be returned to the client in full.
-SECRET_KEYS = {"OPENROUTER_API_KEY", "VOYAGE_API_KEY"}
+SECRET_KEYS = {"OPENROUTER_API_KEY", "VOYAGE_API_KEY", "SMTP_PASSWORD"}
 
 
 def get(key: str, default: str = "") -> str:

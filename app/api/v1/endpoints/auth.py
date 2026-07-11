@@ -1,9 +1,11 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
 from app.core.security import verify_password, get_password_hash, create_access_token
+from app.core import email as email_service
+from app.core.settings import settings
 from app.api.deps import get_current_user
 from app.models.organization import Organization
 from app.models.user import User
@@ -23,7 +25,7 @@ def _slugify(name: str) -> str:
 
 
 @router.post("/register", response_model=Token, status_code=201)
-def register(payload: RegisterRequest, db: Session = Depends(get_db)) -> Token:
+def register(payload: RegisterRequest, background: BackgroundTasks, db: Session = Depends(get_db)) -> Token:
     if db.query(User).filter(User.email == payload.email).first():
         raise HTTPException(status_code=400, detail="Email already registered")
 
@@ -41,6 +43,14 @@ def register(payload: RegisterRequest, db: Session = Depends(get_db)) -> Token:
     db.add(user)
     db.commit()
     db.refresh(user)
+
+    # Best-effort welcome email (no-op if SMTP isn't configured).
+    background.add_task(
+        email_service.send_template_bg,
+        user.email,
+        "welcome",
+        {"name": user.full_name or org.name, "email": user.email, "dashboard_url": f"{settings.FRONTEND_URL}/dashboard"},
+    )
 
     token = create_access_token({"sub": str(user.id), "org": org.id})
     return Token(access_token=token)
@@ -78,6 +88,7 @@ def update_me(
 @router.post("/change-password", status_code=204)
 def change_password(
     payload: ChangePasswordRequest,
+    background: BackgroundTasks,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -87,3 +98,10 @@ def change_password(
         raise HTTPException(status_code=422, detail="New password must be at least 6 characters")
     current_user.hashed_password = get_password_hash(payload.new_password)
     db.commit()
+
+    background.add_task(
+        email_service.send_template_bg,
+        current_user.email,
+        "password_changed",
+        {"name": current_user.full_name or current_user.email, "email": current_user.email},
+    )

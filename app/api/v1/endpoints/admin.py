@@ -4,14 +4,22 @@ from sqlalchemy.orm import Session
 
 from app.db.session import get_db
 from app.api.deps import get_platform_admin
-from app.core import config_store, models_catalog, billing
+from app.core import config_store, models_catalog, billing, email as email_service
 from app.models.user import User
 from app.models.organization import Organization
 from app.models.bot import Bot
 from app.models.subscription import Subscription
 from app.models.package import Package
+from app.models.email_template import EmailTemplate
 from app.schemas.setting import SettingsUpdate, SettingsOut
 from app.schemas.billing import PackageOut, PackageUpsert, ClientRow, SubscribeRequest
+from app.schemas.email import (
+    SMTPSettingsOut,
+    SMTPSettingsUpdate,
+    TestEmailRequest,
+    EmailTemplateOut,
+    EmailTemplateUpdate,
+)
 
 router = APIRouter()
 
@@ -168,3 +176,86 @@ def set_client_plan(
         bots=bots,
         created_at=org.created_at.isoformat() if org.created_at else None,
     )
+
+
+# ===== SMTP / email settings =====
+
+@router.get("/smtp", response_model=SMTPSettingsOut)
+def get_smtp(db: Session = Depends(get_db), admin: User = Depends(get_platform_admin)):
+    cfg = email_service.smtp_config(db)
+    return SMTPSettingsOut(
+        host=cfg["host"],
+        port=cfg["port"],
+        username=cfg["username"],
+        password_set=bool(cfg["password"]),
+        from_email=cfg["from_email"],
+        from_name=cfg["from_name"],
+        security=cfg["security"],
+        enabled=cfg["enabled"],
+    )
+
+
+@router.put("/smtp", response_model=SMTPSettingsOut)
+def update_smtp(payload: SMTPSettingsUpdate, db: Session = Depends(get_db), admin: User = Depends(get_platform_admin)):
+    field_to_key = {
+        "host": "SMTP_HOST",
+        "port": "SMTP_PORT",
+        "username": "SMTP_USERNAME",
+        "password": "SMTP_PASSWORD",
+        "from_email": "SMTP_FROM_EMAIL",
+        "from_name": "SMTP_FROM_NAME",
+        "security": "SMTP_SECURITY",
+        "enabled": "SMTP_ENABLED",
+    }
+    updates: dict[str, str] = {}
+    for field, key in field_to_key.items():
+        value = getattr(payload, field)
+        if value is None:
+            continue
+        if field == "password" and str(value).strip() == "":
+            continue  # blank password -> keep existing
+        if field == "enabled":
+            updates[key] = "true" if value else "false"
+        else:
+            updates[key] = str(value)
+    if updates:
+        config_store.set_many(db, updates)
+    return get_smtp(db=db, admin=admin)
+
+
+@router.post("/smtp/test", status_code=204)
+def send_test_email(payload: TestEmailRequest, db: Session = Depends(get_db), admin: User = Depends(get_platform_admin)):
+    if not email_service.is_configured(db):
+        raise HTTPException(status_code=503, detail="Enable and configure SMTP before sending a test.")
+    try:
+        email_service.send(
+            db,
+            payload.to_email,
+            "AiTechSupport test email",
+            "<p>This is a test email from your AiTechSupport SMTP settings. If you received it, email is working. ✅</p>",
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"Send failed: {exc}")
+
+
+# ===== Email templates =====
+
+@router.get("/email-templates", response_model=list[EmailTemplateOut])
+def list_email_templates(db: Session = Depends(get_db), admin: User = Depends(get_platform_admin)):
+    return db.query(EmailTemplate).order_by(EmailTemplate.id).all()
+
+
+@router.put("/email-templates/{key}", response_model=EmailTemplateOut)
+def update_email_template(key: str, payload: EmailTemplateUpdate, db: Session = Depends(get_db), admin: User = Depends(get_platform_admin)):
+    tmpl = db.query(EmailTemplate).filter(EmailTemplate.key == key).first()
+    if not tmpl:
+        raise HTTPException(status_code=404, detail="Template not found")
+    if payload.subject is not None:
+        tmpl.subject = payload.subject
+    if payload.body_html is not None:
+        tmpl.body_html = payload.body_html
+    if payload.is_active is not None:
+        tmpl.is_active = payload.is_active
+    db.commit()
+    db.refresh(tmpl)
+    return tmpl
