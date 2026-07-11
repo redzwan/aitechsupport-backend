@@ -33,11 +33,14 @@ def retrieve(db: Session, bot: Bot, question: str, k: int | None = None) -> list
     )
 
 
-def answer_question(db: Session, bot: Bot, question: str) -> str:
-    """End-to-end: retrieve context, then generate a grounded answer."""
+def answer_question(db: Session, bot: Bot, question: str) -> tuple[str, int]:
+    """End-to-end: retrieve context, then generate a grounded answer.
+
+    Returns (answer, tokens_used). No context -> fallback message, 0 tokens.
+    """
     chunks = retrieve(db, bot, question)
     if not chunks:
-        return bot.fallback_message or "I don't have an answer for that yet."
+        return (bot.fallback_message or "I don't have an answer for that yet."), 0
     context = "\n\n---\n\n".join(c.content for c in chunks)
     model = models_catalog.resolve_for_bot(bot.chat_model)
     return llm.answer(bot.system_prompt or "", context, question, model=model)

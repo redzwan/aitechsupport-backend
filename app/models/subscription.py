@@ -13,7 +13,7 @@ class Subscription(Base):
     id = Column(Integer, primary_key=True, index=True)
     organization_id = Column(Integer, ForeignKey("organizations.id"), unique=True, index=True, nullable=False)
 
-    # free | starter | pro | business
+    # Package slug (see packages.slug): free | starter | pro | business | ...
     plan = Column(String, default="free", nullable=False)
     # active | past_due | canceled
     status = Column(String, default="active", nullable=False)
@@ -22,6 +22,7 @@ class Subscription(Base):
 
     # Usage metering for plan limits (reset each billing cycle).
     messages_used = Column(Integer, default=0)
+    tokens_used = Column(Integer, default=0, nullable=False)
     period_start = Column(DateTime, default=datetime.utcnow)
 
     created_at = Column(DateTime, default=datetime.utcnow)

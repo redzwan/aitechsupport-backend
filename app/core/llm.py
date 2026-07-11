@@ -23,8 +23,8 @@ def _build_system(system_prompt: str) -> str:
     )
 
 
-def answer(system_prompt: str, context: str, question: str, model: str) -> str:
-    """Generate a grounded answer with the given OpenRouter model id."""
+def answer(system_prompt: str, context: str, question: str, model: str) -> tuple[str, int]:
+    """Generate a grounded answer. Returns (text, total_tokens) for usage metering."""
     from openai import OpenAI  # lazy import so the app boots without the SDK configured
 
     key = config_store.get("OPENROUTER_API_KEY")
@@ -41,4 +41,11 @@ def answer(system_prompt: str, context: str, question: str, model: str) -> str:
             {"role": "user", "content": f"CONTEXT:\n{context}\n\nQUESTION: {question}"},
         ],
     )
-    return (resp.choices[0].message.content or "").strip()
+    text = (resp.choices[0].message.content or "").strip()
+    # `or 0` guards against usage present but total_tokens == None (some providers).
+    tokens = (getattr(resp.usage, "total_tokens", 0) or 0) if resp.usage else 0
+    if not tokens:
+        # Provider didn't report usage — estimate (~4 chars/token) so metering still advances.
+        approx = len(_build_system(system_prompt)) + len(context) + len(question) + len(text)
+        tokens = max(1, approx // 4)
+    return text, tokens
