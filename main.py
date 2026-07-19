@@ -3,10 +3,10 @@
 Run: uvicorn main:app --reload --port 8100
 """
 from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
 
 from app.db.session import engine, Base
 from app.core.settings import settings, cors_origins
+from app.core.cors import WidgetCORSMiddleware
 from app.api.v1.api import api_router
 
 # Dev convenience: create tables on boot. In production, migrations are the
@@ -16,13 +16,9 @@ Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title=settings.PROJECT_NAME)
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=cors_origins(),
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# Dashboard/API paths use the static credentialed allowlist; public widget paths
+# get per-bot dynamic (credential-less) CORS — see app/core/cors.py.
+app.add_middleware(WidgetCORSMiddleware, static_origins=cors_origins())
 
 app.include_router(api_router, prefix=settings.API_V1_STR)
 

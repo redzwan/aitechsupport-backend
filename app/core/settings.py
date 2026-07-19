@@ -84,6 +84,19 @@ class Settings(BaseSettings):
     # Lifetime (seconds) of a presigned download URL handed to the dashboard.
     STORAGE_URL_EXPIRY: int = int(os.getenv("STORAGE_URL_EXPIRY", 15 * 60))
 
+    # ===== Website chat widget (public embed) =====
+    # Redis backs the widget's rate limit + global GPU concurrency cap across workers.
+    # Empty -> per-process in-memory fallback (dev / single worker).
+    REDIS_URL: str = os.getenv("REDIS_URL", "")
+    # Where the pasted <script src> points (the hosted bundle).
+    WIDGET_SRC_URL: str = os.getenv("WIDGET_SRC_URL", "https://cdn.aitechsupport.my/widget/v1/widget.js")
+    # Per public_key + client-IP request cap, per minute.
+    WIDGET_RATE_PER_MIN: int = int(os.getenv("WIDGET_RATE_PER_MIN", 20))
+    # Global cap on simultaneous in-flight widget LLM calls (protects the shared GPU).
+    WIDGET_MAX_CONCURRENCY: int = int(os.getenv("WIDGET_MAX_CONCURRENCY", 4))
+    # Default per-bot messages/day when a channel sets no explicit cap.
+    WIDGET_DAILY_CAP_DEFAULT: int = int(os.getenv("WIDGET_DAILY_CAP_DEFAULT", 500))
+
     # ===== WhatsApp channel =====
     WHATSAPP_PROVIDER: str = os.getenv("WHATSAPP_PROVIDER", "meta")
     WHATSAPP_VERIFY_TOKEN: str = os.getenv("WHATSAPP_VERIFY_TOKEN", "")

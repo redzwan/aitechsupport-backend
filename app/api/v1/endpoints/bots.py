@@ -5,11 +5,14 @@ from sqlalchemy.orm import Session
 
 from app.db.session import get_db
 from app.api.deps import get_current_user
-from app.core import rag, embeddings, llm, models_catalog, billing
+from app.core import rag, embeddings, llm, models_catalog, billing, widget
+from app.core.settings import settings
 from app.models.user import User
 from app.models.bot import Bot
+from app.models.channel import Channel
 from app.schemas.bot import BotCreate, BotOut, ChatRequest, ChatResponse
 from app.schemas.setting import ModelOption
+from app.schemas.widget import WidgetConfigOut, WidgetConfigUpdate
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -93,3 +96,64 @@ def chat(
     if tokens:
         billing.record_usage(db, user.organization_id, tokens)
     return ChatResponse(answer=answer)
+
+
+# ===== Website widget config (JWT, org-scoped) =====
+
+def _widget_out(ch: Channel) -> WidgetConfigOut:
+    src = settings.WIDGET_SRC_URL
+    snippet = f'<script src="{src}" data-public-key="{ch.public_key}" defer></script>'
+    return WidgetConfigOut(
+        enabled=bool(ch.is_active),
+        public_key=ch.public_key,
+        allowed_origins=list(ch.allowed_origins or []),
+        appearance={**widget.DEFAULT_APPEARANCE, **(ch.appearance or {})},
+        daily_message_cap=ch.widget_daily_message_cap,
+        src_url=src,
+        snippet=snippet,
+    )
+
+
+@router.get("/{bot_id}/widget", response_model=WidgetConfigOut)
+def get_widget(bot_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """Widget config for this bot (find-or-creates a disabled widget channel)."""
+    bot = _get_owned_bot(bot_id, db, user)
+    return _widget_out(widget.get_or_create_widget_channel(db, bot))
+
+
+@router.put("/{bot_id}/widget", response_model=WidgetConfigOut)
+def update_widget(
+    bot_id: int,
+    payload: WidgetConfigUpdate,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Update widget config. Origins are normalized/validated; unknown appearance keys dropped."""
+    bot = _get_owned_bot(bot_id, db, user)
+    ch = widget.get_or_create_widget_channel(db, bot)
+    if payload.enabled is not None:
+        ch.is_active = payload.enabled
+    if payload.allowed_origins is not None:
+        ch.allowed_origins = widget.validate_origins(payload.allowed_origins)
+    if payload.appearance is not None:
+        merged = {**widget.DEFAULT_APPEARANCE, **(ch.appearance or {})}
+        for k, v in payload.appearance.items():
+            if k in widget.DEFAULT_APPEARANCE and isinstance(v, str):
+                merged[k] = v[:200]
+        ch.appearance = merged
+    if payload.daily_message_cap is not None:
+        ch.widget_daily_message_cap = max(0, payload.daily_message_cap) or None
+    db.commit()
+    db.refresh(ch)
+    return _widget_out(ch)
+
+
+@router.post("/{bot_id}/widget/rotate-key", response_model=WidgetConfigOut)
+def rotate_widget_key(bot_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """Mint a new public_key (invalidates already-pasted snippets)."""
+    bot = _get_owned_bot(bot_id, db, user)
+    ch = widget.get_or_create_widget_channel(db, bot)
+    ch.public_key = widget.gen_public_key()
+    db.commit()
+    db.refresh(ch)
+    return _widget_out(ch)
