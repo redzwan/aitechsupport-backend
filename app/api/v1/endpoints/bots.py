@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 
 from app.db.session import get_db
 from app.api.deps import get_current_user
-from app.core import rag, embeddings, llm, models_catalog, billing, widget
+from app.core import rag, embeddings, llm, models_catalog, billing, widget, analytics
 from app.core.settings import settings
 from app.models.user import User
 from app.models.bot import Bot
@@ -20,6 +20,7 @@ from app.schemas.widget import (
     ConversationOut,
     ConversationMessageOut,
     ConversationStatusUpdate,
+    WidgetAnalyticsOut,
 )
 
 logger = logging.getLogger(__name__)
@@ -261,3 +262,16 @@ def update_conversation(
     mc = db.query(func.count(Message.id)).filter(Message.conversation_id == conv.id).scalar() or 0
     kinds = {c.id: c.kind for c in db.query(Channel).filter(Channel.bot_id == bot.id).all()}
     return _conv_out(conv, int(mc), kinds.get(conv.channel_id))
+
+
+@router.get("/{bot_id}/widget/analytics", response_model=WidgetAnalyticsOut)
+def widget_analytics(
+    bot_id: int,
+    days: int = 30,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Usage analytics for a bot over the last `days`: volume, leads, fallback rate,
+    token spend, a daily series, top questions, and recent unanswered questions."""
+    bot = _get_owned_bot(bot_id, db, user)
+    return analytics.widget_analytics(db, bot, days)

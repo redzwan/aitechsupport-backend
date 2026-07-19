@@ -114,3 +114,34 @@ class ConversationMessageOut(BaseModel):
 
 class ConversationStatusUpdate(BaseModel):
     status: str = Field(pattern="^(bot|needs_human|human|resolved)$")
+
+
+# ===== Widget analytics (JWT, org-scoped) =====
+
+class AnalyticsPoint(BaseModel):
+    date: str
+    count: int
+
+
+class TopQuestion(BaseModel):
+    question: str
+    count: int
+
+
+class UnansweredQuestion(BaseModel):
+    question: str
+    at: datetime | None = None
+
+
+class WidgetAnalyticsOut(BaseModel):
+    days: int
+    conversations: int
+    leads: int
+    messages: int
+    user_messages: int
+    tokens: int
+    fallbacks: int
+    fallback_rate: float
+    series: list[AnalyticsPoint]
+    top_questions: list[TopQuestion]
+    unanswered: list[UnansweredQuestion]
