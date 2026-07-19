@@ -25,3 +25,5 @@ requests
 # Knowledge-base ingestion (website crawl + HTML cleaning)
 beautifulsoup4
 bleach
+# Object storage: original KB uploads on an AIStor / MinIO (S3-compatible) bucket
+minio

@@ -27,6 +27,8 @@ class KnowledgeOut(BaseModel):
     location: str | None = None
     status: str
     chunk_count: int = 0
+    has_file: bool = False          # a downloadable original is stored
+    file_size: int | None = None
 
     class Config:
         from_attributes = True

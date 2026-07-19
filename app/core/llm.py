@@ -6,12 +6,26 @@ config_store (admin DB setting first, then env).
 """
 from __future__ import annotations
 
+import httpx
+
 from app.core import config_store
 
 DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
 
 
+def _base_url() -> str:
+    return config_store.get("OPENROUTER_BASE_URL") or DEFAULT_BASE_URL
+
+
+def _needs_key(base_url: str) -> bool:
+    """External gateways (OpenRouter) need a key; a self-hosted endpoint (Ollama) does not."""
+    return "openrouter.ai" in base_url
+
+
 def is_configured() -> bool:
+    base_url = _base_url()
+    if not _needs_key(base_url):
+        return True  # local/self-hosted endpoint (e.g. Ollama on the ai-server)
     return bool(config_store.get("OPENROUTER_API_KEY"))
 
 
@@ -27,12 +41,21 @@ def answer(system_prompt: str, context: str, question: str, model: str) -> tuple
     """Generate a grounded answer. Returns (text, total_tokens) for usage metering."""
     from openai import OpenAI  # lazy import so the app boots without the SDK configured
 
-    key = config_store.get("OPENROUTER_API_KEY")
+    base_url = _base_url()
+    # Self-hosted Ollama ignores the key but the OpenAI SDK requires a non-empty string.
+    key = config_store.get("OPENROUTER_API_KEY") or ("ollama" if not _needs_key(base_url) else "")
     if not key:
         raise RuntimeError("OPENROUTER_API_KEY is not configured")
-    base_url = config_store.get("OPENROUTER_BASE_URL") or DEFAULT_BASE_URL
 
-    client = OpenAI(api_key=key, base_url=base_url, default_headers={"X-Title": "AiTechSupport"})
+    # Bounded timeout so a slow/hung self-hosted model fails deterministically
+    # (well within nginx's proxy window) instead of tying up the worker to the
+    # SDK default (~600s) and billing tokens for an answer the client never gets.
+    client = OpenAI(
+        api_key=key,
+        base_url=base_url,
+        timeout=httpx.Timeout(45.0, connect=5.0),
+        default_headers={"X-Title": "AiTechSupport"},
+    )
     resp = client.chat.completions.create(
         model=model,
         max_tokens=1024,

@@ -19,9 +19,15 @@ class KnowledgeSource(Base):
     # url | file | text
     source_type = Column(String, nullable=False)
     title = Column(String, nullable=True)
-    location = Column(String, nullable=True)  # URL or stored file path
+    location = Column(String, nullable=True)  # URL or original filename (display)
     # pending | processing | ready | failed
     status = Column(String, default="pending", nullable=False)
+
+    # Original uploaded file, persisted to object storage (AIStor/MinIO). Null when
+    # storage is off or the source isn't a file (url/text). Served via presigned URL.
+    object_key = Column(String, nullable=True)
+    file_size = Column(Integer, nullable=True)
+    content_type = Column(String, nullable=True)
 
     created_at = Column(DateTime, default=datetime.utcnow)
 

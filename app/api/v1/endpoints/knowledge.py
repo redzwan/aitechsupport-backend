@@ -1,10 +1,14 @@
+import logging
+import uuid
+from pathlib import Path
+
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, UploadFile, File
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
 from app.api.deps import get_current_user
-from app.core import embeddings, ingest, loaders
+from app.core import embeddings, ingest, loaders, storage
 from app.core.settings import settings
 from app.models.user import User
 from app.models.bot import Bot
@@ -12,6 +16,8 @@ from app.models.knowledge import KnowledgeSource, Chunk
 from app.schemas.knowledge import KnowledgeCreate, KnowledgeOut
 
 router = APIRouter()
+
+logger = logging.getLogger(__name__)
 
 _READ_CHUNK = 64 * 1024
 
@@ -45,6 +51,8 @@ def _out(src: KnowledgeSource, chunk_count: int) -> KnowledgeOut:
         location=src.location,
         status=src.status,
         chunk_count=chunk_count,
+        has_file=bool(src.object_key),
+        file_size=src.file_size,
     )
 
 
@@ -124,6 +132,20 @@ async def upload_knowledge(
     if not text.strip():
         raise HTTPException(status_code=422, detail="No extractable text in file")
 
+    # Persist the original file to object storage so it stays downloadable and
+    # re-ingestable. Best-effort: text extraction is the critical path, so a
+    # storage outage logs a warning but never fails the upload.
+    object_key: str | None = None
+    if storage.is_configured(db):
+        ext = Path(file.filename or "").suffix.lower()
+        key = f"kb/{user.organization_id}/{bot.id}/{uuid.uuid4().hex}{ext}"
+        try:
+            object_key = storage.put_bytes(
+                db, data, key, content_type=file.content_type or "application/octet-stream"
+            )
+        except Exception:  # noqa: BLE001
+            logger.warning("original upload not stored for bot %s (storage error)", bot.id, exc_info=True)
+
     src = KnowledgeSource(
         organization_id=user.organization_id,
         bot_id=bot.id,
@@ -131,6 +153,9 @@ async def upload_knowledge(
         title=title or file.filename,
         location=file.filename,
         status="pending",
+        object_key=object_key,
+        file_size=len(data) if object_key else None,
+        content_type=file.content_type if object_key else None,
     )
     db.add(src)
     db.commit()
@@ -172,6 +197,31 @@ def list_knowledge(
     return [_out(s, counts.get(s.id, 0)) for s in sources]
 
 
+@router.get("/knowledge/{source_id}/download")
+def download_knowledge(
+    source_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Return a short-lived presigned URL for the original uploaded file."""
+    src = (
+        db.query(KnowledgeSource)
+        .filter(KnowledgeSource.id == source_id, KnowledgeSource.organization_id == user.organization_id)
+        .first()
+    )
+    if not src:
+        raise HTTPException(status_code=404, detail="Knowledge source not found")
+    if not src.object_key:
+        raise HTTPException(status_code=404, detail="No stored file for this source")
+    if not storage.is_configured(db):
+        raise HTTPException(status_code=503, detail="Object storage is not configured")
+    try:
+        url = storage.presigned_url(db, src.object_key, download_name=src.location)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"Could not generate download URL: {exc}")
+    return {"url": url}
+
+
 @router.delete("/knowledge/{source_id}", status_code=204)
 def delete_knowledge(
     source_id: int,
@@ -185,6 +235,9 @@ def delete_knowledge(
     )
     if not src:
         raise HTTPException(status_code=404, detail="Knowledge source not found")
+    # Best-effort remove of the stored original before dropping the row.
+    if src.object_key:
+        storage.remove(db, src.object_key)
     db.query(Chunk).filter(Chunk.knowledge_source_id == src.id).delete()
     db.delete(src)
     db.commit()

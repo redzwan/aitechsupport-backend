@@ -17,6 +17,7 @@ from app.models.setting import Setting
 MANAGED_KEYS = {
     "OPENROUTER_API_KEY": "OPENROUTER_API_KEY",
     "OPENROUTER_BASE_URL": "OPENROUTER_BASE_URL",
+    "OLLAMA_BASE_URL": "OLLAMA_BASE_URL",
     "VOYAGE_API_KEY": "VOYAGE_API_KEY",
     "DEFAULT_CHAT_MODEL": "DEFAULT_CHAT_MODEL",
     # SMTP / email
@@ -28,10 +29,17 @@ MANAGED_KEYS = {
     "SMTP_FROM_NAME": "SMTP_FROM_NAME",
     "SMTP_SECURITY": "SMTP_SECURITY",   # tls | ssl | none
     "SMTP_ENABLED": "SMTP_ENABLED",     # "true" | "false"
+    # Object storage (AIStor / MinIO / any S3-compatible endpoint)
+    "STORAGE_ENDPOINT": "STORAGE_ENDPOINT",     # host[:port], no scheme
+    "STORAGE_ACCESS_KEY": "STORAGE_ACCESS_KEY",
+    "STORAGE_SECRET_KEY": "STORAGE_SECRET_KEY",
+    "STORAGE_BUCKET": "STORAGE_BUCKET",
+    "STORAGE_SECURE": "STORAGE_SECURE",         # "true" | "false" (https)
+    "STORAGE_ENABLED": "STORAGE_ENABLED",       # "true" | "false"
 }
 
 # Keys whose value must never be returned to the client in full.
-SECRET_KEYS = {"OPENROUTER_API_KEY", "VOYAGE_API_KEY", "SMTP_PASSWORD"}
+SECRET_KEYS = {"OPENROUTER_API_KEY", "VOYAGE_API_KEY", "SMTP_PASSWORD", "STORAGE_SECRET_KEY"}
 
 
 def get(key: str, default: str = "") -> str:

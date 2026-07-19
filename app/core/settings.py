@@ -38,10 +38,15 @@ class Settings(BaseSettings):
     OPENROUTER_BASE_URL: str = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
     DEFAULT_CHAT_MODEL: str = os.getenv("DEFAULT_CHAT_MODEL", "anthropic/claude-haiku-4.5")
 
+    # ===== Self-hosted inference (Ollama on the ai-server, reached over Tailscale) =====
+    # When set, the chat path points OPENROUTER_BASE_URL at "{OLLAMA_BASE_URL}/v1"
+    # (Ollama's OpenAI-compatible API) and embeddings use EMBEDDINGS_PROVIDER=ollama.
+    # No API key is required for a local endpoint.
+    OLLAMA_BASE_URL: str = os.getenv("OLLAMA_BASE_URL", "http://100.101.148.46:11434")
+
     # ===== Embeddings =====
-    # Provider: "voyage" (production) | "fake" (deterministic, offline dev/CI — NO real
-    # semantics, never use in production). "fake" lets the ingest/retrieve pipeline run
-    # without a paid API key.
+    # Provider: "ollama" (self-hosted, e.g. bge-m3) | "voyage" (external) |
+    # "fake" (deterministic, offline dev/CI — NO real semantics, never use in production).
     EMBEDDINGS_PROVIDER: str = os.getenv("EMBEDDINGS_PROVIDER", "voyage")
     VOYAGE_API_KEY: str = os.getenv("VOYAGE_API_KEY", "")
     EMBEDDING_MODEL: str = os.getenv("EMBEDDING_MODEL", "voyage-3")
@@ -64,6 +69,20 @@ class Settings(BaseSettings):
     URL_FETCH_MAX_REDIRECTS: int = int(os.getenv("URL_FETCH_MAX_REDIRECTS", 5))
     # Cap on a fetched page body (defaults to the upload cap).
     MAX_URL_BYTES: int = int(os.getenv("MAX_URL_BYTES", 5 * 1024 * 1024))
+
+    # ===== Object storage (AIStor / MinIO / S3-compatible) =====
+    # Env fallbacks; a platform admin overrides these in the DB (config_store /
+    # admin storage settings) without a redeploy. Endpoint is host[:port] with NO
+    # scheme — TLS is controlled by STORAGE_SECURE. Original KB uploads are stored
+    # privately and served via short-lived presigned URLs.
+    STORAGE_ENDPOINT: str = os.getenv("STORAGE_ENDPOINT", "s3.dev-stage.net")
+    STORAGE_ACCESS_KEY: str = os.getenv("STORAGE_ACCESS_KEY", "")
+    STORAGE_SECRET_KEY: str = os.getenv("STORAGE_SECRET_KEY", "")
+    STORAGE_BUCKET: str = os.getenv("STORAGE_BUCKET", "")
+    STORAGE_SECURE: bool = os.getenv("STORAGE_SECURE", "True").lower() == "true"
+    STORAGE_ENABLED: bool = os.getenv("STORAGE_ENABLED", "False").lower() == "true"
+    # Lifetime (seconds) of a presigned download URL handed to the dashboard.
+    STORAGE_URL_EXPIRY: int = int(os.getenv("STORAGE_URL_EXPIRY", 15 * 60))
 
     # ===== WhatsApp channel =====
     WHATSAPP_PROVIDER: str = os.getenv("WHATSAPP_PROVIDER", "meta")

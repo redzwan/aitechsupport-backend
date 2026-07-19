@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session
 
 from app.db.session import get_db
 from app.api.deps import get_platform_admin
-from app.core import config_store, models_catalog, billing, email as email_service
+from app.core import config_store, models_catalog, billing, email as email_service, storage
 from app.models.user import User
 from app.models.organization import Organization
 from app.models.bot import Bot
@@ -12,6 +12,7 @@ from app.models.subscription import Subscription
 from app.models.package import Package
 from app.models.email_template import EmailTemplate
 from app.schemas.setting import SettingsUpdate, SettingsOut
+from app.schemas.storage import StorageSettingsOut, StorageSettingsUpdate
 from app.schemas.billing import PackageOut, PackageUpsert, ClientRow, SubscribeRequest
 from app.schemas.email import (
     SMTPSettingsOut,
@@ -265,3 +266,50 @@ def update_email_template(key: str, payload: EmailTemplateUpdate, db: Session = 
     db.commit()
     db.refresh(tmpl)
     return tmpl
+
+
+# ===== Object storage (AIStor / MinIO) settings =====
+
+@router.get("/storage", response_model=StorageSettingsOut)
+def get_storage(db: Session = Depends(get_db), admin: User = Depends(get_platform_admin)):
+    """Current storage config. The secret key is never returned in full."""
+    cfg = storage.storage_config(db)
+    return StorageSettingsOut(
+        endpoint=cfg["endpoint"],
+        access_key=cfg["access_key"],
+        secret_key_set=bool(cfg["secret_key"]),
+        secret_key_hint=_hint(cfg["secret_key"]),
+        bucket=cfg["bucket"],
+        secure=cfg["secure"],
+        enabled=cfg["enabled"],
+    )
+
+
+@router.put("/storage", response_model=StorageSettingsOut)
+def update_storage(payload: StorageSettingsUpdate, db: Session = Depends(get_db), admin: User = Depends(get_platform_admin)):
+    """Store provided storage fields. Blank/omitted fields are left unchanged."""
+    updates: dict[str, str] = {}
+    if payload.endpoint is not None and payload.endpoint.strip():
+        updates["STORAGE_ENDPOINT"] = payload.endpoint.strip()
+    if payload.access_key is not None and payload.access_key.strip():
+        updates["STORAGE_ACCESS_KEY"] = payload.access_key.strip()
+    if payload.secret_key is not None and payload.secret_key.strip():
+        updates["STORAGE_SECRET_KEY"] = payload.secret_key.strip()
+    if payload.bucket is not None and payload.bucket.strip():
+        updates["STORAGE_BUCKET"] = payload.bucket.strip()
+    if payload.secure is not None:
+        updates["STORAGE_SECURE"] = "true" if payload.secure else "false"
+    if payload.enabled is not None:
+        updates["STORAGE_ENABLED"] = "true" if payload.enabled else "false"
+    if updates:
+        config_store.set_many(db, updates)
+    return get_storage(db=db, admin=admin)
+
+
+@router.post("/storage/test", status_code=204)
+def test_storage(db: Session = Depends(get_db), admin: User = Depends(get_platform_admin)):
+    """Verify the configured credentials can reach the bucket."""
+    try:
+        storage.test_connection(db)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"Storage check failed: {exc}")
