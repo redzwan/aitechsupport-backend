@@ -5,16 +5,19 @@ with another app. Every request is bounded by: a per-key+IP rate limit, a global
 in-flight-inference cap, a per-bot daily message cap, and the org token quota.
 Tenant identity (organization_id) comes ONLY from the resolved widget Channel.
 """
+import asyncio
 import html
 import json
 import logging
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db, SessionLocal
 from app.core import rag, embeddings, llm, billing, widget, limits, email
+from app.core.events import bus, conv_topic, org_topic
 from app.core.settings import settings
 from app.models.user import User
 from app.models.conversation import Message
@@ -131,7 +134,8 @@ def widget_chat(
     # Bot-pause: a human owns this conversation -> store the visitor turn, no inference.
     paused = _bot_paused(db, channel, session_id)
     if paused:
-        widget.record_user_message(db, channel, session_id, payload.question)
+        conv = widget.record_user_message(db, channel, session_id, payload.question)
+        bus.publish(org_topic(channel.organization_id), {"type": "ping", "conv_id": conv.id})
         return PublicChatResponse(answer="", session_id=session_id, status=paused, handoff=True)
 
     _inference_gates(public_key, channel, db)
@@ -176,7 +180,8 @@ def widget_chat_stream(
     # 'done' event (no inference), so the widget flips to polling for agent replies.
     paused = _bot_paused(db, channel, session_id)
     if paused:
-        widget.record_user_message(db, channel, session_id, question)
+        pconv = widget.record_user_message(db, channel, session_id, question)
+        bus.publish(org_topic(channel.organization_id), {"type": "ping", "conv_id": pconv.id})
 
         def paused_stream():
             yield _sse({"type": "done", "session_id": session_id, "status": paused, "handoff": True})
@@ -267,6 +272,7 @@ def widget_handoff(
 
     session_id = widget.clean_session_id(payload.session_id)
     conv = widget.mark_handoff(db, channel, session_id, payload.name, payload.email, payload.message)
+    bus.publish(org_topic(channel.organization_id), {"type": "ping", "conv_id": conv.id})
     background.add_task(_notify_tenant, channel.organization_id, bot.name,
                         payload.name, payload.email, payload.message or "")
     return HandoffResponse(ok=True, status=conv.status)
@@ -301,3 +307,86 @@ def widget_conversation_messages(
         .all()
     )
     return VisitorMessagesOut(status=conv.status, messages=msgs)
+
+
+def _resolve_conv_for_stream(public_key: str, session_id: str):
+    """Sync (threadpool): resolve widget + conversation. Returns (conv_id|None, status) or None."""
+    db = SessionLocal()
+    try:
+        resolved = widget.resolve_widget(db, public_key)
+        if resolved is None:
+            return None
+        channel, _bot = resolved
+        conv = widget.find_conversation(db, channel, widget.clean_session_id(session_id))
+        if conv is None:
+            return (None, "bot")
+        return (conv.id, conv.status)
+    finally:
+        db.close()
+
+
+def _agent_messages_after(conv_id: int, after: int) -> list[dict]:
+    db = SessionLocal()
+    try:
+        rows = (
+            db.query(Message)
+            .filter(Message.conversation_id == conv_id, Message.role == "agent", Message.id > after)
+            .order_by(Message.id.asc())
+            .limit(100)
+            .all()
+        )
+        return [{"id": m.id, "role": "agent", "content": m.content} for m in rows]
+    finally:
+        db.close()
+
+
+@router.get("/widget/{public_key}/conversation/{session_id}/stream")
+async def widget_conversation_stream(
+    public_key: str,
+    session_id: str,
+    request: Request,
+    after: int = 0,
+):
+    """Visitor SSE — live agent replies + status. Replays messages with id>after from
+    the DB (self-healing on reconnect), then streams live off the in-process bus.
+    Scoped strictly by widget key + session (no client conversation id)."""
+    resolved = await run_in_threadpool(_resolve_conv_for_stream, public_key, session_id)
+    if resolved is None:
+        raise HTTPException(status_code=404, detail="Widget not found")
+    conv_id, status0 = resolved
+
+    async def gen():
+        if conv_id is None:
+            yield _sse({"type": "status", "status": status0})
+            return
+        q = await bus.subscribe(conv_topic(conv_id))
+        last = max(0, after)
+        try:
+            for m in await run_in_threadpool(_agent_messages_after, conv_id, last):
+                last = m["id"]
+                yield _sse({"type": "message", "message": m})
+            yield _sse({"type": "status", "status": status0})
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    data = await asyncio.wait_for(q.get(), timeout=20)
+                except asyncio.TimeoutError:
+                    yield ": keepalive\n\n"
+                    continue
+                if data.get("type") == "message":
+                    mid = data["message"]["id"]
+                    if mid <= last:
+                        continue
+                    last = mid
+                yield _sse(data)
+                if data.get("type") == "status" and data.get("status") == "resolved":
+                    break
+        finally:
+            bus.unsubscribe(conv_topic(conv_id), q)
+
+    return StreamingResponse(
+        gen(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )

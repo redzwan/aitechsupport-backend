@@ -1,13 +1,18 @@
+import asyncio
+import json
 import logging
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.concurrency import run_in_threadpool
+from fastapi.responses import StreamingResponse
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
 from app.api.deps import get_current_user, get_agent_user
 from app.core import rag, embeddings, llm, models_catalog, billing, widget, analytics
+from app.core.events import bus, conv_topic, org_topic
 from app.core.settings import settings
 from app.models.user import User
 from app.models.bot import Bot
@@ -284,6 +289,8 @@ def update_conversation(
         conv.assigned_user_id = None  # hand back to the bot -> drop the agent assignment
     db.commit()
     db.refresh(conv)
+    bus.publish(conv_topic(conv.id), {"type": "status", "status": conv.status})
+    bus.publish(org_topic(conv.organization_id), {"type": "ping", "conv_id": conv.id})
     return _conv_out_full(conv, db, bot)
 
 
@@ -321,6 +328,7 @@ def claim_conversation(
     conv = _owned_conversation(bot, conv_id, db)
     if updated == 0 and conv.assigned_user_id != user.id:
         raise HTTPException(status_code=409, detail="Already claimed by another agent.")
+    bus.publish(org_topic(user.organization_id), {"type": "ping", "conv_id": conv_id})
     return _conv_out_full(conv, db, bot)
 
 
@@ -356,6 +364,10 @@ def reply_conversation(
     db.add(msg)
     db.commit()
     db.refresh(msg)
+    # Realtime: push the reply to the visitor's stream + nudge the org's agent queue.
+    bus.publish(conv_topic(conv.id),
+                {"type": "message", "message": {"id": msg.id, "role": "agent", "content": msg.content}})
+    bus.publish(org_topic(conv.organization_id), {"type": "ping", "conv_id": conv.id})
     return msg
 
 
@@ -374,6 +386,8 @@ def release_conversation(
     conv.status = "needs_human"
     db.commit()
     db.refresh(conv)
+    bus.publish(conv_topic(conv.id), {"type": "status", "status": conv.status})
+    bus.publish(org_topic(conv.organization_id), {"type": "ping", "conv_id": conv.id})
     return _conv_out_full(conv, db, bot)
 
 
@@ -388,3 +402,43 @@ def widget_analytics(
     token spend, a daily series, top questions, and recent unanswered questions."""
     bot = _get_owned_bot(bot_id, db, user)
     return analytics.widget_analytics(db, bot, days)
+
+
+# ===== Realtime (SSE) — live agent queue/thread updates =====
+
+def _sse(obj: dict) -> str:
+    return f"data: {json.dumps(obj, ensure_ascii=False)}\n\n"
+
+
+@router.get("/{bot_id}/events")
+async def agent_events(
+    bot_id: int,
+    request: Request,
+    user: User = Depends(get_agent_user),
+):
+    """SSE for the agent dashboard/app: a 'ping' (with conv_id) on any change in the
+    org's conversations — new lead, new visitor message, claim, status. The client
+    refetches the queue (and the open thread) on a ping. Org-scoped, agent-guarded."""
+    org_id = user.organization_id
+
+    async def gen():
+        q = await bus.subscribe(org_topic(org_id))
+        try:
+            yield _sse({"type": "connected"})
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    data = await asyncio.wait_for(q.get(), timeout=20)
+                except asyncio.TimeoutError:
+                    yield ": keepalive\n\n"  # keep the connection warm through proxies
+                    continue
+                yield _sse(data)
+        finally:
+            bus.unsubscribe(org_topic(org_id), q)
+
+    return StreamingResponse(
+        gen(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
