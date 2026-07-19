@@ -5,17 +5,25 @@ with another app. Every request is bounded by: a per-key+IP rate limit, a global
 in-flight-inference cap, a per-bot daily message cap, and the org token quota.
 Tenant identity (organization_id) comes ONLY from the resolved widget Channel.
 """
+import html
 import json
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db, SessionLocal
-from app.core import rag, embeddings, llm, billing, widget, limits
+from app.core import rag, embeddings, llm, billing, widget, limits, email
 from app.core.settings import settings
-from app.schemas.widget import PublicChatRequest, PublicChatResponse, WidgetPublicConfig
+from app.models.user import User
+from app.schemas.widget import (
+    PublicChatRequest,
+    PublicChatResponse,
+    WidgetPublicConfig,
+    HandoffRequest,
+    HandoffResponse,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -23,6 +31,35 @@ router = APIRouter()
 
 def _sse(obj: dict) -> str:
     return f"data: {json.dumps(obj, ensure_ascii=False)}\n\n"
+
+
+def _notify_tenant(org_id: int, bot_name: str, name: str, contact_email: str, message: str) -> None:
+    """Best-effort email to the org's active users that a visitor wants a human."""
+    db = SessionLocal()
+    try:
+        if not email.is_configured(db):
+            logger.info("handoff email skipped (SMTP off) for org %s", org_id)
+            return
+        recipients = [
+            u.email for u in db.query(User).filter(
+                User.organization_id == org_id, User.is_active.is_(True)
+            ).all()
+        ]
+        subject = f"New chat lead for {bot_name}"
+        body_html = (
+            f"<p>A website visitor asked to talk to a human on <b>{html.escape(bot_name)}</b>.</p>"
+            f"<p><b>Name:</b> {html.escape(name)}<br>"
+            f"<b>Email:</b> {html.escape(contact_email)}</p>"
+            f"<p><b>Message:</b><br>{html.escape(message or '(none)')}</p>"
+            f"<p>Reply to them directly, or view it in your dashboard inbox.</p>"
+        )
+        for to in recipients:
+            try:
+                email.send(db, to, subject, body_html)
+            except Exception:  # noqa: BLE001 — one bad address shouldn't drop the rest
+                logger.warning("handoff email to %s failed", to, exc_info=True)
+    finally:
+        db.close()
 
 
 def _client_ip(request: Request) -> str:
@@ -102,7 +139,9 @@ def widget_chat(
     if tokens:
         billing.record_usage(db, channel.organization_id, tokens)
     conv = widget.record_turn(db, channel, session_id, payload.question, answer, tokens)
-    return PublicChatResponse(answer=answer, session_id=session_id, status=conv.status)
+    # tokens == 0 means the no-context fallback fired -> suggest a human.
+    return PublicChatResponse(answer=answer, session_id=session_id, status=conv.status,
+                              handoff=(tokens == 0))
 
 
 @router.post("/widget/{public_key}/chat/stream")
@@ -151,7 +190,8 @@ def widget_chat_stream(
                 billing.record_usage(sdb, org_id, tokens)
             conv = widget.record_turn(sdb, channel, session_id, question, full_text, tokens)
             recorded = True
-            yield _sse({"type": "done", "session_id": session_id, "status": conv.status})
+            yield _sse({"type": "done", "session_id": session_id, "status": conv.status,
+                        "handoff": (tokens == 0)})
         except GeneratorExit:
             # Client disconnected mid-stream — fall through to finally (no more yields).
             raise
@@ -176,3 +216,30 @@ def widget_chat_stream(
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+@router.post("/widget/{public_key}/handoff", response_model=HandoffResponse)
+def widget_handoff(
+    public_key: str,
+    payload: HandoffRequest,
+    request: Request,
+    background: BackgroundTasks,
+    db: Session = Depends(get_db),
+):
+    """Lead-capture: a visitor asks for a human. Flags their conversation needs_human,
+    stores their contact, and emails the tenant (best-effort, off the request path)."""
+    resolved = widget.resolve_widget(db, public_key)
+    if resolved is None:
+        raise HTTPException(status_code=404, detail="Widget not found")
+    channel, bot = resolved
+
+    ip = _client_ip(request)
+    if not limits.rate_limit_ok(f"{public_key}:{ip}:handoff", settings.WIDGET_RATE_PER_MIN, 60):
+        raise HTTPException(status_code=429, detail="Too many requests. Please slow down.",
+                            headers={"Retry-After": "60"})
+
+    session_id = widget.clean_session_id(payload.session_id)
+    conv = widget.mark_handoff(db, channel, session_id, payload.name, payload.email, payload.message)
+    background.add_task(_notify_tenant, channel.organization_id, bot.name,
+                        payload.name, payload.email, payload.message or "")
+    return HandoffResponse(ok=True, status=conv.status)

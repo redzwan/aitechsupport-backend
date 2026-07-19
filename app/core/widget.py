@@ -151,3 +151,45 @@ def record_turn(
     conv.last_message_at = now
     db.commit()
     return conv
+
+
+def find_conversation(db: Session, channel: Channel, session_id: str) -> Conversation | None:
+    return (
+        db.query(Conversation)
+        .filter(
+            Conversation.channel_id == channel.id,
+            Conversation.external_user_id == session_id,
+            Conversation.organization_id == channel.organization_id,
+        )
+        .first()
+    )
+
+
+def mark_handoff(db: Session, channel: Channel, session_id: str, name: str,
+                 email: str, message: str) -> Conversation:
+    """Flag the visitor's conversation as needing a human + store their contact
+    (lead-capture). Creates the conversation if they hadn't chatted yet."""
+    now = datetime.utcnow()
+    conv = find_conversation(db, channel, session_id)
+    if conv is None:
+        conv = Conversation(
+            organization_id=channel.organization_id,
+            bot_id=channel.bot_id,
+            channel_id=channel.id,
+            external_user_id=session_id,
+            last_message_at=now,
+        )
+        db.add(conv)
+        db.commit()
+        db.refresh(conv)
+    conv.status = "needs_human"
+    conv.contact_name = (name or "").strip()[:120] or None
+    conv.contact_email = (email or "").strip()[:200] or None
+    conv.needs_human_at = now
+    conv.last_message_at = now
+    if message and message.strip():
+        db.add(Message(organization_id=channel.organization_id, conversation_id=conv.id,
+                       role="user", content=message.strip()[:4000], tokens=0))
+    db.commit()
+    db.refresh(conv)
+    return conv

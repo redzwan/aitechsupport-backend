@@ -1,6 +1,7 @@
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
@@ -10,9 +11,16 @@ from app.core.settings import settings
 from app.models.user import User
 from app.models.bot import Bot
 from app.models.channel import Channel
+from app.models.conversation import Conversation, Message
 from app.schemas.bot import BotCreate, BotOut, ChatRequest, ChatResponse
 from app.schemas.setting import ModelOption
-from app.schemas.widget import WidgetConfigOut, WidgetConfigUpdate
+from app.schemas.widget import (
+    WidgetConfigOut,
+    WidgetConfigUpdate,
+    ConversationOut,
+    ConversationMessageOut,
+    ConversationStatusUpdate,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -157,3 +165,99 @@ def rotate_widget_key(bot_id: int, db: Session = Depends(get_db), user: User = D
     db.commit()
     db.refresh(ch)
     return _widget_out(ch)
+
+
+# ===== Conversation inbox (JWT, org + bot scoped) =====
+
+def _conv_out(conv: Conversation, message_count: int, channel_kind: str | None) -> ConversationOut:
+    return ConversationOut(
+        id=conv.id,
+        status=conv.status,
+        channel_kind=channel_kind,
+        contact_name=conv.contact_name,
+        contact_email=conv.contact_email,
+        needs_human_at=conv.needs_human_at,
+        last_message_at=conv.last_message_at,
+        created_at=conv.created_at,
+        message_count=message_count,
+    )
+
+
+def _owned_conversation(bot: Bot, conv_id: int, db: Session) -> Conversation:
+    conv = (
+        db.query(Conversation)
+        .filter(
+            Conversation.id == conv_id,
+            Conversation.bot_id == bot.id,
+            Conversation.organization_id == bot.organization_id,
+        )
+        .first()
+    )
+    if not conv:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    return conv
+
+
+@router.get("/{bot_id}/conversations", response_model=list[ConversationOut])
+def list_conversations(
+    bot_id: int,
+    status: str | None = None,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Conversations for a bot (newest first). Filter by status (e.g. needs_human)."""
+    bot = _get_owned_bot(bot_id, db, user)
+    q = db.query(Conversation).filter(
+        Conversation.bot_id == bot.id,
+        Conversation.organization_id == user.organization_id,
+    )
+    if status:
+        q = q.filter(Conversation.status == status)
+    convs = q.order_by(Conversation.last_message_at.desc()).limit(200).all()
+    if not convs:
+        return []
+    ids = [c.id for c in convs]
+    counts = dict(
+        db.query(Message.conversation_id, func.count(Message.id))
+        .filter(Message.conversation_id.in_(ids))
+        .group_by(Message.conversation_id)
+        .all()
+    )
+    kinds = {c.id: c.kind for c in db.query(Channel).filter(Channel.bot_id == bot.id).all()}
+    return [_conv_out(c, counts.get(c.id, 0), kinds.get(c.channel_id)) for c in convs]
+
+
+@router.get("/{bot_id}/conversations/{conv_id}/messages", response_model=list[ConversationMessageOut])
+def conversation_messages(
+    bot_id: int,
+    conv_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    bot = _get_owned_bot(bot_id, db, user)
+    conv = _owned_conversation(bot, conv_id, db)
+    return (
+        db.query(Message)
+        .filter(Message.conversation_id == conv.id)
+        .order_by(Message.created_at.asc(), Message.id.asc())
+        .all()
+    )
+
+
+@router.patch("/{bot_id}/conversations/{conv_id}", response_model=ConversationOut)
+def update_conversation(
+    bot_id: int,
+    conv_id: int,
+    payload: ConversationStatusUpdate,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Update a conversation's status (e.g. mark a lead resolved)."""
+    bot = _get_owned_bot(bot_id, db, user)
+    conv = _owned_conversation(bot, conv_id, db)
+    conv.status = payload.status
+    db.commit()
+    db.refresh(conv)
+    mc = db.query(func.count(Message.id)).filter(Message.conversation_id == conv.id).scalar() or 0
+    kinds = {c.id: c.kind for c in db.query(Channel).filter(Channel.bot_id == bot.id).all()}
+    return _conv_out(conv, int(mc), kinds.get(conv.channel_id))

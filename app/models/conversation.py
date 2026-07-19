@@ -18,8 +18,14 @@ class Conversation(Base):
     # End-user identity on the channel (e.g. WhatsApp phone number).
     external_user_id = Column(String, index=True, nullable=True)
 
-    # bot | needs_human | human   (drives the handoff inbox)
+    # bot | needs_human | human | resolved   (drives the handoff inbox)
     status = Column(String, default="bot", nullable=False)
+
+    # Lead-capture: set when a visitor asks for a human (website widget handoff).
+    contact_name = Column(String, nullable=True)
+    contact_email = Column(String, nullable=True)
+    needs_human_at = Column(DateTime, nullable=True)
+
     last_message_at = Column(DateTime, default=datetime.utcnow)
     created_at = Column(DateTime, default=datetime.utcnow)
 
