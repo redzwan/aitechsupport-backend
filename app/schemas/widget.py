@@ -94,6 +94,8 @@ class ConversationOut(BaseModel):
     contact_name: str | None = None
     contact_email: str | None = None
     needs_human_at: datetime | None = None
+    assigned_user_id: int | None = None
+    assignee_name: str | None = None
     last_message_at: datetime | None = None
     created_at: datetime | None = None
     message_count: int = 0
@@ -106,6 +108,7 @@ class ConversationMessageOut(BaseModel):
     id: int
     role: str
     content: str
+    sender_user_id: int | None = None
     created_at: datetime | None = None
 
     class Config:
@@ -114,6 +117,18 @@ class ConversationMessageOut(BaseModel):
 
 class ConversationStatusUpdate(BaseModel):
     status: str = Field(pattern="^(bot|needs_human|human|resolved)$")
+
+
+class AgentReplyRequest(BaseModel):
+    content: str = Field(min_length=1, max_length=4000)
+
+    @field_validator("content")
+    @classmethod
+    def _not_blank(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("content must not be blank")
+        return v
 
 
 # ===== Widget analytics (JWT, org-scoped) =====
@@ -145,3 +160,10 @@ class WidgetAnalyticsOut(BaseModel):
     series: list[AnalyticsPoint]
     top_questions: list[TopQuestion]
     unanswered: list[UnansweredQuestion]
+
+
+# ===== Visitor-side poll (public) — receive agent replies during live takeover =====
+
+class VisitorMessagesOut(BaseModel):
+    status: str                                  # bot | needs_human | human | resolved
+    messages: list[ConversationMessageOut]       # agent replies with id > after cursor

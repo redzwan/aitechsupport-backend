@@ -195,3 +195,27 @@ def mark_handoff(db: Session, channel: Channel, session_id: str, name: str,
     db.commit()
     db.refresh(conv)
     return conv
+
+
+def record_user_message(db: Session, channel: Channel, session_id: str, content: str) -> Conversation:
+    """Store ONLY the visitor's message (no bot answer) — used when a human owns the
+    conversation and the bot is paused. Find-or-creates the conversation."""
+    now = datetime.utcnow()
+    conv = find_conversation(db, channel, session_id)
+    if conv is None:
+        conv = Conversation(
+            organization_id=channel.organization_id,
+            bot_id=channel.bot_id,
+            channel_id=channel.id,
+            external_user_id=session_id,
+            last_message_at=now,
+        )
+        db.add(conv)
+        db.commit()
+        db.refresh(conv)
+    db.add(Message(organization_id=channel.organization_id, conversation_id=conv.id,
+                   role="user", content=content, tokens=0))
+    conv.last_message_at = now
+    db.commit()
+    db.refresh(conv)
+    return conv

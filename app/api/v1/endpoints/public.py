@@ -17,12 +17,14 @@ from app.db.session import get_db, SessionLocal
 from app.core import rag, embeddings, llm, billing, widget, limits, email
 from app.core.settings import settings
 from app.models.user import User
+from app.models.conversation import Message
 from app.schemas.widget import (
     PublicChatRequest,
     PublicChatResponse,
     WidgetPublicConfig,
     HandoffRequest,
     HandoffResponse,
+    VisitorMessagesOut,
 )
 
 logger = logging.getLogger(__name__)
@@ -80,36 +82,39 @@ def widget_config(public_key: str, db: Session = Depends(get_db)):
     return WidgetPublicConfig(**{k: ap[k] for k in WidgetPublicConfig.model_fields})
 
 
-def _guard(public_key: str, request: Request, db: Session):
-    """Shared pre-flight for the public chat paths: resolve the tenant + run every
-    abuse/quota gate. Returns (channel, bot) or raises the appropriate HTTPException.
-    Runs BEFORE any streaming starts, so these stay normal HTTP status codes."""
+def _resolve_and_ratelimit(public_key: str, request: Request, db: Session):
+    """Resolve the tenant widget + the cheapest abuse gate. Runs before any streaming."""
     resolved = widget.resolve_widget(db, public_key)
     if resolved is None:
         raise HTTPException(status_code=404, detail="Widget not found")
     channel, bot = resolved
-
-    # 1) Per-key + IP rate limit (cheapest abuse gate first).
     ip = _client_ip(request)
     if not limits.rate_limit_ok(f"{public_key}:{ip}", settings.WIDGET_RATE_PER_MIN, 60):
         raise HTTPException(status_code=429, detail="Too many requests. Please slow down.",
                             headers={"Retry-After": "60"})
+    return channel, bot
 
-    # 2) Config guard — clear 503 instead of a 500 if inference isn't wired.
+
+def _inference_gates(public_key: str, channel, db: Session) -> None:
+    """Guards that only apply when we're about to spend GPU: config, quota, daily cap."""
     if not embeddings.is_configured() or not llm.is_configured():
         raise HTTPException(status_code=503, detail="Assistant temporarily unavailable.")
-
-    # 3) Org token quota (a leaked key must not bypass metering).
     sub = billing.get_or_create_subscription(db, channel.organization_id)
     if not billing.has_quota(db, sub):
         raise HTTPException(status_code=402, detail="This assistant has reached its usage limit.")
-
-    # 4) Per-bot daily cap — counted only once we're about to actually spend GPU.
     cap = channel.widget_daily_message_cap or settings.WIDGET_DAILY_CAP_DEFAULT
     if limits.daily_incr(public_key) > cap:
         raise HTTPException(status_code=429, detail="Daily message limit reached for this assistant.",
                             headers={"Retry-After": "3600"})
-    return channel, bot
+
+
+def _bot_paused(db: Session, channel, session_id: str):
+    """If a human owns this session's conversation, return its status (bot is paused),
+    else None. When paused, the widget's chat must NOT spend GPU or bill."""
+    conv = widget.find_conversation(db, channel, session_id)
+    if conv and conv.status in ("needs_human", "human"):
+        return conv.status
+    return None
 
 
 @router.post("/widget/{public_key}/chat", response_model=PublicChatResponse)
@@ -120,8 +125,16 @@ def widget_chat(
     db: Session = Depends(get_db),
 ):
     """Buffered (non-streaming) answer — kept as the fallback for the streaming path."""
-    channel, bot = _guard(public_key, request, db)
+    channel, bot = _resolve_and_ratelimit(public_key, request, db)
     session_id = widget.clean_session_id(payload.session_id)
+
+    # Bot-pause: a human owns this conversation -> store the visitor turn, no inference.
+    paused = _bot_paused(db, channel, session_id)
+    if paused:
+        widget.record_user_message(db, channel, session_id, payload.question)
+        return PublicChatResponse(answer="", session_id=session_id, status=paused, handoff=True)
+
+    _inference_gates(public_key, channel, db)
 
     # Generate under the global in-flight-inference cap so the widget can never
     # monopolize the shared GPU.
@@ -155,9 +168,23 @@ def widget_chat_stream(
     starts, everything (busy / errors / done) is a terminal in-band SSE event, since
     the HTTP status is committed the moment the first byte flushes."""
     # Gates run on the request session BEFORE we commit to a 200 stream.
-    _guard(public_key, request, db)
+    channel, _bot = _resolve_and_ratelimit(public_key, request, db)
     session_id = widget.clean_session_id(payload.session_id)
     question = payload.question
+
+    # Bot-pause: a human owns this conversation -> store the visitor turn + a terminal
+    # 'done' event (no inference), so the widget flips to polling for agent replies.
+    paused = _bot_paused(db, channel, session_id)
+    if paused:
+        widget.record_user_message(db, channel, session_id, question)
+
+        def paused_stream():
+            yield _sse({"type": "done", "session_id": session_id, "status": paused, "handoff": True})
+
+        return StreamingResponse(paused_stream(), media_type="text/event-stream",
+                                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+    _inference_gates(public_key, channel, db)
 
     def event_stream():
         # Hold one inference slot for the stream's whole lifetime (in-band 'busy' if none).
@@ -243,3 +270,34 @@ def widget_handoff(
     background.add_task(_notify_tenant, channel.organization_id, bot.name,
                         payload.name, payload.email, payload.message or "")
     return HandoffResponse(ok=True, status=conv.status)
+
+
+@router.get("/widget/{public_key}/conversation/{session_id}/messages", response_model=VisitorMessagesOut)
+def widget_conversation_messages(
+    public_key: str,
+    session_id: str,
+    request: Request,
+    after: int = 0,
+    db: Session = Depends(get_db),
+):
+    """Visitor poll for live human replies: agent messages (role='agent') with id>after,
+    plus the conversation status. Scoped STRICTLY to this widget's channel + this session —
+    never a client-supplied conversation id — so one visitor can't read another's thread."""
+    resolved = widget.resolve_widget(db, public_key)
+    if resolved is None:
+        raise HTTPException(status_code=404, detail="Widget not found")
+    channel, _bot = resolved
+    ip = _client_ip(request)
+    if not limits.rate_limit_ok(f"{public_key}:{ip}:poll", settings.WIDGET_RATE_PER_MIN * 6, 60):
+        raise HTTPException(status_code=429, detail="Too many requests.", headers={"Retry-After": "10"})
+    conv = widget.find_conversation(db, channel, widget.clean_session_id(session_id))
+    if conv is None:
+        return VisitorMessagesOut(status="bot", messages=[])
+    msgs = (
+        db.query(Message)
+        .filter(Message.conversation_id == conv.id, Message.role == "agent", Message.id > max(0, after))
+        .order_by(Message.id.asc())
+        .limit(100)
+        .all()
+    )
+    return VisitorMessagesOut(status=conv.status, messages=msgs)

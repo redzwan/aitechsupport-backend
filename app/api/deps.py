@@ -40,3 +40,11 @@ def get_platform_admin(user: User = Depends(get_current_user)) -> User:
     if not user.is_platform_admin:
         raise HTTPException(status_code=403, detail="Platform admin only")
     return user
+
+
+def get_agent_user(user: User = Depends(get_current_user)) -> User:
+    """Guard for live human-agent takeover actions. Permissive by design — any org
+    staff (owner|admin|agent) may claim and answer; queries stay scoped to their org."""
+    if user.role not in ("owner", "admin", "agent"):
+        raise HTTPException(status_code=403, detail="Agent access required")
+    return user

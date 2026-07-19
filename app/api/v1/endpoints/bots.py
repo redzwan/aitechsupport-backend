@@ -1,11 +1,12 @@
 import logging
+from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
-from app.api.deps import get_current_user
+from app.api.deps import get_current_user, get_agent_user
 from app.core import rag, embeddings, llm, models_catalog, billing, widget, analytics
 from app.core.settings import settings
 from app.models.user import User
@@ -20,6 +21,7 @@ from app.schemas.widget import (
     ConversationOut,
     ConversationMessageOut,
     ConversationStatusUpdate,
+    AgentReplyRequest,
     WidgetAnalyticsOut,
 )
 
@@ -170,7 +172,8 @@ def rotate_widget_key(bot_id: int, db: Session = Depends(get_db), user: User = D
 
 # ===== Conversation inbox (JWT, org + bot scoped) =====
 
-def _conv_out(conv: Conversation, message_count: int, channel_kind: str | None) -> ConversationOut:
+def _conv_out(conv: Conversation, message_count: int, channel_kind: str | None,
+              assignee_name: str | None = None) -> ConversationOut:
     return ConversationOut(
         id=conv.id,
         status=conv.status,
@@ -178,10 +181,23 @@ def _conv_out(conv: Conversation, message_count: int, channel_kind: str | None) 
         contact_name=conv.contact_name,
         contact_email=conv.contact_email,
         needs_human_at=conv.needs_human_at,
+        assigned_user_id=conv.assigned_user_id,
+        assignee_name=assignee_name,
         last_message_at=conv.last_message_at,
         created_at=conv.created_at,
         message_count=message_count,
     )
+
+
+def _conv_out_full(conv: Conversation, db: Session, bot: Bot) -> ConversationOut:
+    """Build a ConversationOut for a single conversation (message count + assignee name)."""
+    mc = db.query(func.count(Message.id)).filter(Message.conversation_id == conv.id).scalar() or 0
+    kinds = {c.id: c.kind for c in db.query(Channel).filter(Channel.bot_id == bot.id).all()}
+    name = None
+    if conv.assigned_user_id:
+        u = db.query(User).filter(User.id == conv.assigned_user_id).first()
+        name = (u.full_name or u.email) if u else None
+    return _conv_out(conv, int(mc), kinds.get(conv.channel_id), name)
 
 
 def _owned_conversation(bot: Bot, conv_id: int, db: Session) -> Conversation:
@@ -225,7 +241,12 @@ def list_conversations(
         .all()
     )
     kinds = {c.id: c.kind for c in db.query(Channel).filter(Channel.bot_id == bot.id).all()}
-    return [_conv_out(c, counts.get(c.id, 0), kinds.get(c.channel_id)) for c in convs]
+    assignee_ids = {c.assigned_user_id for c in convs if c.assigned_user_id}
+    names = {}
+    if assignee_ids:
+        for u in db.query(User).filter(User.id.in_(assignee_ids)).all():
+            names[u.id] = u.full_name or u.email
+    return [_conv_out(c, counts.get(c.id, 0), kinds.get(c.channel_id), names.get(c.assigned_user_id)) for c in convs]
 
 
 @router.get("/{bot_id}/conversations/{conv_id}/messages", response_model=list[ConversationMessageOut])
@@ -253,15 +274,107 @@ def update_conversation(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """Update a conversation's status (e.g. mark a lead resolved)."""
+    """Update a conversation's status (e.g. mark a lead resolved / hand back to the bot)."""
     bot = _get_owned_bot(bot_id, db, user)
     conv = _owned_conversation(bot, conv_id, db)
     conv.status = payload.status
+    if payload.status == "resolved":
+        conv.resolved_at = datetime.utcnow()
+    elif payload.status == "bot":
+        conv.assigned_user_id = None  # hand back to the bot -> drop the agent assignment
     db.commit()
     db.refresh(conv)
-    mc = db.query(func.count(Message.id)).filter(Message.conversation_id == conv.id).scalar() or 0
-    kinds = {c.id: c.kind for c in db.query(Channel).filter(Channel.bot_id == bot.id).all()}
-    return _conv_out(conv, int(mc), kinds.get(conv.channel_id))
+    return _conv_out_full(conv, db, bot)
+
+
+# ===== Live human-agent takeover (JWT, org + bot scoped) =====
+
+@router.post("/{bot_id}/conversations/{conv_id}/claim", response_model=ConversationOut)
+def claim_conversation(
+    bot_id: int,
+    conv_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_agent_user),
+):
+    """Claim an unassigned conversation. Double-claim-safe: a single conditional UPDATE
+    whose WHERE clause IS the lock. 409 if another agent already owns it."""
+    bot = _get_owned_bot(bot_id, db, user)
+    _owned_conversation(bot, conv_id, db)  # 404 if not this org/bot
+    updated = (
+        db.query(Conversation)
+        .filter(
+            Conversation.id == conv_id,
+            Conversation.bot_id == bot.id,
+            Conversation.organization_id == user.organization_id,
+            Conversation.assigned_user_id.is_(None),
+        )
+        .update(
+            {
+                Conversation.assigned_user_id: user.id,
+                Conversation.status: "human",
+                Conversation.assigned_at: datetime.utcnow(),
+            },
+            synchronize_session=False,
+        )
+    )
+    db.commit()
+    conv = _owned_conversation(bot, conv_id, db)
+    if updated == 0 and conv.assigned_user_id != user.id:
+        raise HTTPException(status_code=409, detail="Already claimed by another agent.")
+    return _conv_out_full(conv, db, bot)
+
+
+@router.post("/{bot_id}/conversations/{conv_id}/reply", response_model=ConversationMessageOut)
+def reply_conversation(
+    bot_id: int,
+    conv_id: int,
+    payload: AgentReplyRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_agent_user),
+):
+    """Post a human agent reply (role='agent'). Self-claims + flips status->human.
+    Ownership-guarded so a losing racer can't reply. No billing (human labor != GPU)."""
+    bot = _get_owned_bot(bot_id, db, user)
+    conv = _owned_conversation(bot, conv_id, db)
+    if conv.assigned_user_id not in (None, user.id) and user.role not in ("owner", "admin"):
+        raise HTTPException(status_code=403, detail="This conversation is handled by another agent.")
+    now = datetime.utcnow()
+    if conv.assigned_user_id is None:
+        conv.assigned_user_id = user.id
+        conv.assigned_at = now
+    conv.status = "human"
+    conv.last_agent_at = now
+    conv.last_message_at = now
+    msg = Message(
+        organization_id=conv.organization_id,
+        conversation_id=conv.id,
+        role="agent",
+        content=payload.content,
+        tokens=0,
+        sender_user_id=user.id,
+    )
+    db.add(msg)
+    db.commit()
+    db.refresh(msg)
+    return msg
+
+
+@router.post("/{bot_id}/conversations/{conv_id}/release", response_model=ConversationOut)
+def release_conversation(
+    bot_id: int,
+    conv_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_agent_user),
+):
+    """Release a conversation back to the shared needs_human queue."""
+    bot = _get_owned_bot(bot_id, db, user)
+    conv = _owned_conversation(bot, conv_id, db)
+    conv.assigned_user_id = None
+    conv.assigned_at = None
+    conv.status = "needs_human"
+    db.commit()
+    db.refresh(conv)
+    return _conv_out_full(conv, db, bot)
 
 
 @router.get("/{bot_id}/widget/analytics", response_model=WidgetAnalyticsOut)

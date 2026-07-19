@@ -23,4 +23,8 @@ class User(Base):
     # Platform operator (not a tenant role): may edit global settings / API keys.
     is_platform_admin = Column(Boolean, default=False, nullable=False)
 
+    # Agent presence for live-takeover routing (null == offline; exercised later).
+    presence_status = Column(String, nullable=True)
+    last_seen_at = Column(DateTime, nullable=True)
+
     created_at = Column(DateTime, default=datetime.utcnow)

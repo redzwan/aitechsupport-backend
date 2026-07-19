@@ -26,6 +26,12 @@ class Conversation(Base):
     contact_email = Column(String, nullable=True)
     needs_human_at = Column(DateTime, nullable=True)
 
+    # Live human-agent takeover: which agent (org user) owns this conversation.
+    assigned_user_id = Column(Integer, ForeignKey("users.id"), index=True, nullable=True)
+    assigned_at = Column(DateTime, nullable=True)
+    resolved_at = Column(DateTime, nullable=True)
+    last_agent_at = Column(DateTime, nullable=True)
+
     last_message_at = Column(DateTime, default=datetime.utcnow)
     created_at = Column(DateTime, default=datetime.utcnow)
 
@@ -44,5 +50,7 @@ class Message(Base):
     content = Column(Text, nullable=False)
     # Token accounting for usage-metered billing.
     tokens = Column(Integer, default=0)
+    # Which org user authored an agent reply (null for bot/user messages).
+    sender_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
 
     created_at = Column(DateTime, default=datetime.utcnow)
