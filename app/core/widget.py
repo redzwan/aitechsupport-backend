@@ -23,10 +23,12 @@ MAX_SESSION_ID = 64
 
 DEFAULT_APPEARANCE: dict = {
     "title": "Chat with us",
+    "subtitle": "We typically reply in a few minutes",
     "greeting": "Hi! How can I help you today?",
     "primary_color": "#4f46e5",
     "position": "right",          # right | left
     "launcher_label": "Chat",
+    "theme": "auto",              # auto | light | dark
 }
 
 

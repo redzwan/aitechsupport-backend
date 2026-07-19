@@ -58,10 +58,12 @@ class HandoffResponse(BaseModel):
 class WidgetPublicConfig(BaseModel):
     """Appearance the bundle needs to render itself. No secrets."""
     title: str
+    subtitle: str
     greeting: str
     primary_color: str
     position: str
     launcher_label: str
+    theme: str
 
 
 # ===== Dashboard (JWT, org-scoped) widget config =====
