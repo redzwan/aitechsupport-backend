@@ -1,6 +1,6 @@
 from fastapi import APIRouter
 
-from app.api.v1.endpoints import health, auth, bots, knowledge, admin, billing, whatsapp, public
+from app.api.v1.endpoints import health, auth, bots, knowledge, admin, billing, whatsapp, public, content
 
 api_router = APIRouter()
 
@@ -17,3 +17,5 @@ api_router.include_router(knowledge.router, tags=["knowledge"])
 api_router.include_router(whatsapp.router, prefix="/webhooks/whatsapp", tags=["whatsapp"])
 # Public, JWT-less website-widget endpoints (dynamic per-bot CORS via WidgetCORSMiddleware)
 api_router.include_router(public.router, prefix="/public", tags=["public-widget"])
+# Public marketing-site content (homepage, pricing, CMS pages, contact)
+api_router.include_router(content.router, prefix="/content", tags=["content"])

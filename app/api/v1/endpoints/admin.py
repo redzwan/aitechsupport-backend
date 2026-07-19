@@ -4,13 +4,15 @@ from sqlalchemy.orm import Session
 
 from app.db.session import get_db
 from app.api.deps import get_platform_admin
-from app.core import config_store, models_catalog, billing, email as email_service, storage
+from app.core import config_store, models_catalog, billing, email as email_service, storage, cms
 from app.models.user import User
 from app.models.organization import Organization
 from app.models.bot import Bot
 from app.models.subscription import Subscription
 from app.models.package import Package
 from app.models.email_template import EmailTemplate
+from app.models.page import Page
+from app.schemas.content import HomepageUpdate, PageAdminOut, PageCreate, PageUpdate
 from app.schemas.setting import SettingsUpdate, SettingsOut
 from app.schemas.storage import StorageSettingsOut, StorageSettingsUpdate
 from app.schemas.billing import PackageOut, PackageUpsert, ClientRow, SubscribeRequest
@@ -313,3 +315,58 @@ def test_storage(db: Session = Depends(get_db), admin: User = Depends(get_platfo
         storage.test_connection(db)
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=f"Storage check failed: {exc}")
+
+
+# ===== Homepage content (structured CMS) =====
+
+@router.get("/homepage")
+def get_homepage(db: Session = Depends(get_db), admin: User = Depends(get_platform_admin)) -> dict:
+    return cms.get_homepage(db)
+
+
+@router.put("/homepage")
+def update_homepage(payload: HomepageUpdate, db: Session = Depends(get_db),
+                    admin: User = Depends(get_platform_admin)) -> dict:
+    return cms.set_homepage(db, payload.content)
+
+
+# ===== Content pages (About, Privacy, Terms, …) =====
+
+@router.get("/pages", response_model=list[PageAdminOut])
+def list_pages(db: Session = Depends(get_db), admin: User = Depends(get_platform_admin)):
+    cms.seed_default_pages(db)  # first visit -> starter pages
+    return db.query(Page).order_by(Page.sort_order, Page.title).all()
+
+
+@router.post("/pages", response_model=PageAdminOut, status_code=201)
+def create_page(payload: PageCreate, db: Session = Depends(get_db),
+                admin: User = Depends(get_platform_admin)):
+    if db.query(Page).filter(Page.slug == payload.slug).first():
+        raise HTTPException(status_code=409, detail="A page with that slug already exists.")
+    p = Page(**payload.model_dump())
+    db.add(p)
+    db.commit()
+    db.refresh(p)
+    return p
+
+
+@router.put("/pages/{page_id}", response_model=PageAdminOut)
+def update_page(page_id: int, payload: PageUpdate, db: Session = Depends(get_db),
+                admin: User = Depends(get_platform_admin)):
+    p = db.query(Page).filter(Page.id == page_id).first()
+    if not p:
+        raise HTTPException(status_code=404, detail="Page not found")
+    for k, v in payload.model_dump(exclude_unset=True).items():
+        setattr(p, k, v)
+    db.commit()
+    db.refresh(p)
+    return p
+
+
+@router.delete("/pages/{page_id}", status_code=204)
+def delete_page(page_id: int, db: Session = Depends(get_db),
+                admin: User = Depends(get_platform_admin)):
+    p = db.query(Page).filter(Page.id == page_id).first()
+    if p:
+        db.delete(p)
+        db.commit()
