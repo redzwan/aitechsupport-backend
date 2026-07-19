@@ -44,3 +44,19 @@ def answer_question(db: Session, bot: Bot, question: str) -> tuple[str, int]:
     context = "\n\n---\n\n".join(c.content for c in chunks)
     model = models_catalog.resolve_for_bot(bot.chat_model)
     return llm.answer(bot.system_prompt or "", context, question, model=model)
+
+
+def answer_question_stream(db: Session, bot: Bot, question: str):
+    """Streaming twin of answer_question. Yields {'type':'delta'|'final', ...} events;
+    the terminal 'final' carries the full text + tokens for persistence/metering.
+    No context -> the fallback message as a single delta, 0 tokens.
+    """
+    chunks = retrieve(db, bot, question)
+    if not chunks:
+        fb = bot.fallback_message or "I don't have an answer for that yet."
+        yield {"type": "delta", "text": fb}
+        yield {"type": "final", "text": fb, "tokens": 0}
+        return
+    context = "\n\n---\n\n".join(c.content for c in chunks)
+    model = models_catalog.resolve_for_bot(bot.chat_model)
+    yield from llm.answer_stream(bot.system_prompt or "", context, question, model=model)

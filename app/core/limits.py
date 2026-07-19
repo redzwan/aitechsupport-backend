@@ -93,42 +93,54 @@ def daily_incr(key: str) -> int:
         return _mem_daily[key]
 
 
-@contextmanager
-def inference_slot(max_concurrency: int):
-    """Bound simultaneous in-flight LLM calls so the widget can't monopolize the GPU.
+_INFLIGHT_KEY = "wl:inflight"
 
-    Raises AtCapacity if the global cap is already reached.
-    """
+
+def acquire_slot(max_concurrency: int) -> str | None:
+    """Take one in-flight-inference slot. Returns a token to pass to release_slot(),
+    or None if the global cap is already reached. Usable across a streaming response
+    (hold the token for the stream's lifetime, release in a finally)."""
     global _mem_inflight
-    key = "wl:inflight"
     c = _client()
-    backend = None
-    try:
+    if c is not None:
+        try:
+            n = c.incr(_INFLIGHT_KEY)
+            c.expire(_INFLIGHT_KEY, 120)  # self-heal if a DECR is ever missed
+            if int(n) > max_concurrency:
+                c.decr(_INFLIGHT_KEY)
+                return None
+            return "redis"
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("inflight redis error (%s); using in-memory.", exc)
+    with _mem_lock:
+        if _mem_inflight >= max_concurrency:
+            return None
+        _mem_inflight += 1
+        return "mem"
+
+
+def release_slot(token: str | None) -> None:
+    global _mem_inflight
+    if token == "redis":
+        c = _client()
         if c is not None:
             try:
-                n = c.incr(key)
-                c.expire(key, 120)  # self-heal if a DECR is ever missed
-                if int(n) > max_concurrency:
-                    c.decr(key)
-                    raise AtCapacity()
-                backend = "redis"
-            except AtCapacity:
-                raise
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("inflight redis error (%s); using in-memory.", exc)
-        if backend is None:
-            with _mem_lock:
-                if _mem_inflight >= max_concurrency:
-                    raise AtCapacity()
-                _mem_inflight += 1
-                backend = "mem"
-        yield
-    finally:
-        if backend == "redis":
-            try:
-                c.decr(key)
+                c.decr(_INFLIGHT_KEY)
             except Exception:  # noqa: BLE001
                 pass
-        elif backend == "mem":
-            with _mem_lock:
-                _mem_inflight = max(0, _mem_inflight - 1)
+    elif token == "mem":
+        with _mem_lock:
+            _mem_inflight = max(0, _mem_inflight - 1)
+
+
+@contextmanager
+def inference_slot(max_concurrency: int):
+    """Bound simultaneous in-flight LLM calls (non-streaming path). Raises AtCapacity
+    if the global cap is already reached."""
+    token = acquire_slot(max_concurrency)
+    if token is None:
+        raise AtCapacity()
+    try:
+        yield
+    finally:
+        release_slot(token)
