@@ -12,6 +12,7 @@ from app.core.settings import settings
 from app.api.deps import get_current_user
 from app.models.organization import Organization
 from app.models.user import User
+from app.models.bot import Bot
 from app.models.org_invite import OrgInvite
 from app.schemas.auth import (
     RegisterRequest,
@@ -20,7 +21,7 @@ from app.schemas.auth import (
     UpdateProfileRequest,
     ChangePasswordRequest,
 )
-from app.schemas.invite import InvitePreview, JoinRequest
+from app.schemas.invite import InvitePreview, JoinRequest, AcceptInviteRequest
 
 router = APIRouter()
 
@@ -131,6 +132,53 @@ def join(payload: JoinRequest, background: BackgroundTasks, db: Session = Depend
     )
     token = create_access_token({"sub": str(user.id), "org": inv.organization_id})
     return Token(access_token=token)
+
+
+@router.post("/accept-invite", response_model=UserProfile)
+def accept_invite(
+    payload: AcceptInviteRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> User:
+    """Move the SIGNED-IN user into the invite's org + role (for people who already
+    have an account). Guarded so an owner with real data can't orphan their org."""
+    inv = db.query(OrgInvite).filter(OrgInvite.code == payload.code.strip()).first()
+    if inv is None or not invites_core.is_valid(inv):
+        raise HTTPException(status_code=400, detail="This invite is invalid or has expired.")
+    if inv.organization_id == current_user.organization_id:
+        raise HTTPException(status_code=400, detail="You're already a member of this organization.")
+
+    old_org_id = current_user.organization_id
+    # Don't let an owner abandon an org that still has data (bots) or other members.
+    if current_user.role == "owner":
+        others = db.query(User).filter(User.organization_id == old_org_id, User.id != current_user.id).count()
+        bots = db.query(Bot).filter(Bot.organization_id == old_org_id).count()
+        if others > 0 or bots > 0:
+            raise HTTPException(
+                status_code=409,
+                detail="You own an organization with data (bots or other members). Hand it over or remove it before joining another org.",
+            )
+
+    # Consume one use atomically (all-or-nothing with the move below).
+    if inv.max_uses is not None:
+        consumed = (
+            db.query(OrgInvite)
+            .filter(OrgInvite.id == inv.id, or_(OrgInvite.max_uses.is_(None), OrgInvite.uses < OrgInvite.max_uses))
+            .update({OrgInvite.uses: OrgInvite.uses + 1}, synchronize_session=False)
+        )
+        if consumed == 0:
+            db.rollback()
+            raise HTTPException(status_code=400, detail="This invite has already been used.")
+    else:
+        db.query(OrgInvite).filter(OrgInvite.id == inv.id).update(
+            {OrgInvite.uses: OrgInvite.uses + 1}, synchronize_session=False
+        )
+
+    current_user.organization_id = inv.organization_id
+    current_user.role = inv.role if inv.role in ("agent", "admin") else "agent"
+    db.commit()
+    db.refresh(current_user)
+    return current_user
 
 
 @router.post("/login", response_model=Token)

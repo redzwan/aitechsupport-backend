@@ -32,3 +32,7 @@ class JoinRequest(BaseModel):
     email: EmailStr
     full_name: str | None = Field(default=None, max_length=120)
     password: str = Field(min_length=6, max_length=200)
+
+
+class AcceptInviteRequest(BaseModel):
+    code: str = Field(min_length=4, max_length=64)
