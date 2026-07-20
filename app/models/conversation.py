@@ -56,5 +56,8 @@ class Message(Base):
     tokens = Column(Integer, default=0)
     # Which org user authored an agent reply (null for bot/user messages).
     sender_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    # Point-in-time display name of the agent (shown to the visitor). Captured at
+    # send time so it survives later profile edits.
+    sender_name = Column(String, nullable=True)
 
     created_at = Column(DateTime, default=datetime.utcnow)

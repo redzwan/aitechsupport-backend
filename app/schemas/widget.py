@@ -110,6 +110,7 @@ class ConversationMessageOut(BaseModel):
     role: str
     content: str
     sender_user_id: int | None = None
+    sender_name: str | None = None  # agent display name shown to the visitor
     created_at: datetime | None = None
 
     class Config:

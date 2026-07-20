@@ -361,7 +361,7 @@ def _agent_messages_after(conv_id: int, after: int) -> list[dict]:
             .limit(100)
             .all()
         )
-        return [{"id": m.id, "role": "agent", "content": m.content} for m in rows]
+        return [{"id": m.id, "role": "agent", "content": m.content, "sender_name": m.sender_name} for m in rows]
     finally:
         db.close()
 

@@ -388,6 +388,7 @@ def reply_conversation(
     conv.status = "human"
     conv.last_agent_at = now
     conv.last_message_at = now
+    agent_name = user.full_name or user.email
     msg = Message(
         organization_id=conv.organization_id,
         conversation_id=conv.id,
@@ -395,13 +396,15 @@ def reply_conversation(
         content=payload.content,
         tokens=0,
         sender_user_id=user.id,
+        sender_name=agent_name,
     )
     db.add(msg)
     db.commit()
     db.refresh(msg)
     # Realtime: push the reply to the visitor's stream + nudge the org's agent queue.
     bus.publish(conv_topic(conv.id),
-                {"type": "message", "message": {"id": msg.id, "role": "agent", "content": msg.content}})
+                {"type": "message",
+                 "message": {"id": msg.id, "role": "agent", "content": msg.content, "sender_name": agent_name}})
     bus.publish(org_topic(conv.organization_id), {"type": "ping", "conv_id": conv.id})
     return msg
 
