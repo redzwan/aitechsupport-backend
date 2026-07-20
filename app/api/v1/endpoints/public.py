@@ -79,6 +79,15 @@ def _client_ip(request: Request) -> str:
     return request.client.host if request.client else "unknown"
 
 
+def _ensure_not_blocked(db: Session, channel, session_id: str, ip: str) -> None:
+    """403 if this visitor is blocked on this bot (by session, IP, or their stored
+    email). Runs at ingress, before any GPU/quota spend."""
+    conv = widget.find_conversation(db, channel, session_id)
+    email = conv.contact_email if conv else None
+    if widget.is_blocked(db, channel, session_id, ip=ip, email=email):
+        raise HTTPException(status_code=403, detail="chat_unavailable")
+
+
 @router.get("/widget/{public_key}/config", response_model=WidgetPublicConfig)
 def widget_config(public_key: str, db: Session = Depends(get_db)):
     resolved = widget.resolve_widget(db, public_key)
@@ -134,11 +143,13 @@ def widget_chat(
     """Buffered (non-streaming) answer — kept as the fallback for the streaming path."""
     channel, bot = _resolve_and_ratelimit(public_key, request, db)
     session_id = widget.clean_session_id(payload.session_id)
+    ip = _client_ip(request)
+    _ensure_not_blocked(db, channel, session_id, ip)
 
     # Bot-pause: a human owns this conversation -> store the visitor turn, no inference.
     paused = _bot_paused(db, channel, session_id)
     if paused:
-        conv = widget.record_user_message(db, channel, session_id, payload.question)
+        conv = widget.record_user_message(db, channel, session_id, payload.question, ip=ip)
         bus.publish(org_topic(channel.organization_id), {"type": "ping", "conv_id": conv.id})
         return PublicChatResponse(answer="", session_id=session_id, status=paused, handoff=True)
 
@@ -159,7 +170,7 @@ def widget_chat(
 
     if tokens:
         billing.record_usage(db, channel.organization_id, tokens)
-    conv = widget.record_turn(db, channel, session_id, payload.question, answer, tokens)
+    conv = widget.record_turn(db, channel, session_id, payload.question, answer, tokens, ip=ip)
     # tokens == 0 means the no-context fallback fired -> suggest a human.
     return PublicChatResponse(answer=answer, session_id=session_id, status=conv.status,
                               handoff=(tokens == 0))
@@ -179,12 +190,14 @@ def widget_chat_stream(
     channel, _bot = _resolve_and_ratelimit(public_key, request, db)
     session_id = widget.clean_session_id(payload.session_id)
     question = payload.question
+    ip = _client_ip(request)
+    _ensure_not_blocked(db, channel, session_id, ip)
 
     # Bot-pause: a human owns this conversation -> store the visitor turn + a terminal
     # 'done' event (no inference), so the widget flips to polling for agent replies.
     paused = _bot_paused(db, channel, session_id)
     if paused:
-        pconv = widget.record_user_message(db, channel, session_id, question)
+        pconv = widget.record_user_message(db, channel, session_id, question, ip=ip)
         bus.publish(org_topic(channel.organization_id), {"type": "ping", "conv_id": pconv.id})
 
         def paused_stream():
@@ -224,7 +237,7 @@ def widget_chat_stream(
                     tokens = ev["tokens"]
             if tokens:
                 billing.record_usage(sdb, org_id, tokens)
-            conv = widget.record_turn(sdb, channel, session_id, question, full_text, tokens)
+            conv = widget.record_turn(sdb, channel, session_id, question, full_text, tokens, ip=ip)
             recorded = True
             yield _sse({"type": "done", "session_id": session_id, "status": conv.status,
                         "handoff": (tokens == 0)})
@@ -241,7 +254,7 @@ def widget_chat_stream(
                     billing.record_usage(sdb, org_id, tokens or max(1, len(full_text) // 4))
                     again = widget.resolve_widget(sdb, public_key)
                     if again is not None:
-                        widget.record_turn(sdb, again[0], session_id, question, full_text, tokens)
+                        widget.record_turn(sdb, again[0], session_id, question, full_text, tokens, ip=ip)
                 except Exception:  # noqa: BLE001
                     pass
             sdb.close()
@@ -275,7 +288,10 @@ def widget_handoff(
                             headers={"Retry-After": "60"})
 
     session_id = widget.clean_session_id(payload.session_id)
-    conv = widget.mark_handoff(db, channel, session_id, payload.name, payload.email, payload.message)
+    # Block by session/IP, and also the email they're submitting right now.
+    if widget.is_blocked(db, channel, session_id, ip=ip, email=payload.email):
+        raise HTTPException(status_code=403, detail="chat_unavailable")
+    conv = widget.mark_handoff(db, channel, session_id, payload.name, payload.email, payload.message, ip=ip)
     bus.publish(org_topic(channel.organization_id), {"type": "ping", "conv_id": conv.id})
     background.add_task(_notify_tenant, channel.organization_id, bot.name,
                         payload.name, payload.email, payload.message or "")
@@ -300,6 +316,7 @@ def widget_conversation_messages(
     ip = _client_ip(request)
     if not limits.rate_limit_ok(f"{public_key}:{ip}:poll", settings.WIDGET_RATE_PER_MIN * 6, 60):
         raise HTTPException(status_code=429, detail="Too many requests.", headers={"Retry-After": "10"})
+    _ensure_not_blocked(db, channel, widget.clean_session_id(session_id), ip)
     conv = widget.find_conversation(db, channel, widget.clean_session_id(session_id))
     if conv is None:
         return VisitorMessagesOut(status="bot", messages=[])
@@ -313,15 +330,20 @@ def widget_conversation_messages(
     return VisitorMessagesOut(status=conv.status, messages=msgs)
 
 
-def _resolve_conv_for_stream(public_key: str, session_id: str):
-    """Sync (threadpool): resolve widget + conversation. Returns (conv_id|None, status) or None."""
+def _resolve_conv_for_stream(public_key: str, session_id: str, ip: str):
+    """Sync (threadpool): resolve widget + conversation. Returns (conv_id|None, status),
+    the sentinel "blocked", or None when the widget doesn't resolve."""
     db = SessionLocal()
     try:
         resolved = widget.resolve_widget(db, public_key)
         if resolved is None:
             return None
         channel, _bot = resolved
-        conv = widget.find_conversation(db, channel, widget.clean_session_id(session_id))
+        sid = widget.clean_session_id(session_id)
+        conv = widget.find_conversation(db, channel, sid)
+        email = conv.contact_email if conv else None
+        if widget.is_blocked(db, channel, sid, ip=ip, email=email):
+            return "blocked"
         if conv is None:
             return (None, "bot")
         return (conv.id, conv.status)
@@ -354,9 +376,12 @@ async def widget_conversation_stream(
     """Visitor SSE — live agent replies + status. Replays messages with id>after from
     the DB (self-healing on reconnect), then streams live off the in-process bus.
     Scoped strictly by widget key + session (no client conversation id)."""
-    resolved = await run_in_threadpool(_resolve_conv_for_stream, public_key, session_id)
+    ip = _client_ip(request)
+    resolved = await run_in_threadpool(_resolve_conv_for_stream, public_key, session_id, ip)
     if resolved is None:
         raise HTTPException(status_code=404, detail="Widget not found")
+    if resolved == "blocked":
+        raise HTTPException(status_code=403, detail="chat_unavailable")
     conv_id, status0 = resolved
 
     async def gen():

@@ -6,7 +6,7 @@ from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import StreamingResponse
-from sqlalchemy import func
+from sqlalchemy import func, or_, and_
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
@@ -18,6 +18,7 @@ from app.models.user import User
 from app.models.bot import Bot
 from app.models.channel import Channel
 from app.models.conversation import Conversation, Message
+from app.models.blocked_visitor import BlockedVisitor
 from app.schemas.bot import BotCreate, BotOut, ChatRequest, ChatResponse
 from app.schemas.setting import ModelOption
 from app.schemas.widget import (
@@ -28,6 +29,7 @@ from app.schemas.widget import (
     ConversationStatusUpdate,
     AgentReplyRequest,
     WidgetAnalyticsOut,
+    BlockRequest,
 )
 
 logger = logging.getLogger(__name__)
@@ -194,6 +196,37 @@ def _conv_out(conv: Conversation, message_count: int, channel_kind: str | None,
     )
 
 
+def _conv_block_identifiers(conv: Conversation) -> list[tuple[str, str]]:
+    """Durable identifiers to block/unblock for a conversation (session, IP, email)."""
+    out: list[tuple[str, str]] = []
+    if conv.external_user_id:
+        out.append(("session", conv.external_user_id))
+    if conv.last_ip:
+        out.append(("ip", conv.last_ip))
+    if conv.contact_email:
+        e = conv.contact_email.strip().lower()
+        if e:
+            out.append(("email", e))
+    return out
+
+
+def _is_conv_blocked(db: Session, conv: Conversation) -> bool:
+    idents = _conv_block_identifiers(conv)
+    if not idents:
+        return False
+    conds = [and_(BlockedVisitor.identifier_type == t, BlockedVisitor.identifier == v) for t, v in idents]
+    return (
+        db.query(BlockedVisitor.id)
+        .filter(
+            BlockedVisitor.organization_id == conv.organization_id,
+            BlockedVisitor.bot_id == conv.bot_id,
+            or_(*conds),
+        )
+        .first()
+        is not None
+    )
+
+
 def _conv_out_full(conv: Conversation, db: Session, bot: Bot) -> ConversationOut:
     """Build a ConversationOut for a single conversation (message count + assignee name)."""
     mc = db.query(func.count(Message.id)).filter(Message.conversation_id == conv.id).scalar() or 0
@@ -202,7 +235,9 @@ def _conv_out_full(conv: Conversation, db: Session, bot: Bot) -> ConversationOut
     if conv.assigned_user_id:
         u = db.query(User).filter(User.id == conv.assigned_user_id).first()
         name = (u.full_name or u.email) if u else None
-    return _conv_out(conv, int(mc), kinds.get(conv.channel_id), name)
+    out = _conv_out(conv, int(mc), kinds.get(conv.channel_id), name)
+    out.blocked = _is_conv_blocked(db, conv)
+    return out
 
 
 def _owned_conversation(bot: Bot, conv_id: int, db: Session) -> Conversation:
@@ -388,6 +423,72 @@ def release_conversation(
     db.refresh(conv)
     bus.publish(conv_topic(conv.id), {"type": "status", "status": conv.status})
     bus.publish(org_topic(conv.organization_id), {"type": "ping", "conv_id": conv.id})
+    return _conv_out_full(conv, db, bot)
+
+
+@router.post("/{bot_id}/conversations/{conv_id}/block", response_model=ConversationOut)
+def block_conversation(
+    bot_id: int,
+    conv_id: int,
+    payload: BlockRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_agent_user),
+):
+    """Block this visitor from the bot's widget by every durable identifier we have
+    (session token, last IP, email). Blocking ends the chat: resolve + unassign."""
+    bot = _get_owned_bot(bot_id, db, user)
+    conv = _owned_conversation(bot, conv_id, db)
+    reason = (payload.reason or "").strip()[:500] or None
+    for id_type, value in _conv_block_identifiers(conv):
+        exists = (
+            db.query(BlockedVisitor)
+            .filter(
+                BlockedVisitor.organization_id == conv.organization_id,
+                BlockedVisitor.bot_id == conv.bot_id,
+                BlockedVisitor.identifier_type == id_type,
+                BlockedVisitor.identifier == value,
+            )
+            .first()
+        )
+        if exists is None:
+            db.add(BlockedVisitor(
+                organization_id=conv.organization_id,
+                bot_id=conv.bot_id,
+                channel_id=conv.channel_id,
+                identifier_type=id_type,
+                identifier=value,
+                blocked_by_user_id=user.id,
+                reason=reason,
+            ))
+    conv.status = "resolved"
+    conv.resolved_at = datetime.utcnow()
+    conv.assigned_user_id = None
+    db.commit()
+    db.refresh(conv)
+    bus.publish(conv_topic(conv.id), {"type": "status", "status": "resolved"})
+    bus.publish(org_topic(conv.organization_id), {"type": "ping", "conv_id": conv.id})
+    return _conv_out_full(conv, db, bot)
+
+
+@router.delete("/{bot_id}/conversations/{conv_id}/block", response_model=ConversationOut)
+def unblock_conversation(
+    bot_id: int,
+    conv_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_agent_user),
+):
+    """Lift the block for this visitor's identifiers (session, IP, email)."""
+    bot = _get_owned_bot(bot_id, db, user)
+    conv = _owned_conversation(bot, conv_id, db)
+    for id_type, value in _conv_block_identifiers(conv):
+        db.query(BlockedVisitor).filter(
+            BlockedVisitor.organization_id == conv.organization_id,
+            BlockedVisitor.bot_id == conv.bot_id,
+            BlockedVisitor.identifier_type == id_type,
+            BlockedVisitor.identifier == value,
+        ).delete(synchronize_session=False)
+    db.commit()
+    db.refresh(conv)
     return _conv_out_full(conv, db, bot)
 
 

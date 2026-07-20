@@ -99,6 +99,7 @@ class ConversationOut(BaseModel):
     last_message_at: datetime | None = None
     created_at: datetime | None = None
     message_count: int = 0
+    blocked: bool = False
 
     class Config:
         from_attributes = True
@@ -123,6 +124,10 @@ class QueueRow(ConversationOut):
 
 class ConversationStatusUpdate(BaseModel):
     status: str = Field(pattern="^(bot|needs_human|human|resolved)$")
+
+
+class BlockRequest(BaseModel):
+    reason: str | None = Field(default=None, max_length=500)
 
 
 class AgentReplyRequest(BaseModel):

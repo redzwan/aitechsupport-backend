@@ -11,11 +11,13 @@ import secrets
 from datetime import datetime
 from urllib.parse import urlparse
 
+from sqlalchemy import or_, and_
 from sqlalchemy.orm import Session
 
 from app.models.channel import Channel
 from app.models.bot import Bot
 from app.models.conversation import Conversation, Message
+from app.models.blocked_visitor import BlockedVisitor
 
 WIDGET_KIND = "widget"
 MAX_ALLOWED_ORIGINS = 10
@@ -120,8 +122,36 @@ def resolve_widget(db: Session, public_key: str) -> tuple[Channel, Bot] | None:
     return ch, bot
 
 
+def is_blocked(db: Session, channel: Channel, session_id: str,
+               ip: str | None = None, email: str | None = None) -> bool:
+    """True if this visitor is blocked on this bot by ANY durable identifier
+    (session token, IP, or email)."""
+    pairs = [("session", session_id)]
+    if ip:
+        pairs.append(("ip", ip))
+    if email:
+        e = email.strip().lower()
+        if e:
+            pairs.append(("email", e))
+    conds = [and_(BlockedVisitor.identifier_type == t, BlockedVisitor.identifier == v)
+             for t, v in pairs if v]
+    if not conds:
+        return False
+    return (
+        db.query(BlockedVisitor.id)
+        .filter(
+            BlockedVisitor.organization_id == channel.organization_id,
+            BlockedVisitor.bot_id == channel.bot_id,
+            or_(*conds),
+        )
+        .first()
+        is not None
+    )
+
+
 def record_turn(
-    db: Session, channel: Channel, session_id: str, question: str, answer: str, tokens: int
+    db: Session, channel: Channel, session_id: str, question: str, answer: str, tokens: int,
+    ip: str | None = None,
 ) -> Conversation:
     """Find-or-create the visitor's conversation and append the user + assistant messages."""
     conv = (
@@ -151,6 +181,8 @@ def record_turn(
     db.add(Message(organization_id=channel.organization_id, conversation_id=conv.id,
                    role="assistant", content=answer, tokens=tokens))
     conv.last_message_at = now
+    if ip:
+        conv.last_ip = ip
     db.commit()
     return conv
 
@@ -168,7 +200,7 @@ def find_conversation(db: Session, channel: Channel, session_id: str) -> Convers
 
 
 def mark_handoff(db: Session, channel: Channel, session_id: str, name: str,
-                 email: str, message: str) -> Conversation:
+                 email: str, message: str, ip: str | None = None) -> Conversation:
     """Flag the visitor's conversation as needing a human + store their contact
     (lead-capture). Creates the conversation if they hadn't chatted yet."""
     now = datetime.utcnow()
@@ -189,6 +221,8 @@ def mark_handoff(db: Session, channel: Channel, session_id: str, name: str,
     conv.contact_email = (email or "").strip()[:200] or None
     conv.needs_human_at = now
     conv.last_message_at = now
+    if ip:
+        conv.last_ip = ip
     if message and message.strip():
         db.add(Message(organization_id=channel.organization_id, conversation_id=conv.id,
                        role="user", content=message.strip()[:4000], tokens=0))
@@ -197,7 +231,8 @@ def mark_handoff(db: Session, channel: Channel, session_id: str, name: str,
     return conv
 
 
-def record_user_message(db: Session, channel: Channel, session_id: str, content: str) -> Conversation:
+def record_user_message(db: Session, channel: Channel, session_id: str, content: str,
+                        ip: str | None = None) -> Conversation:
     """Store ONLY the visitor's message (no bot answer) — used when a human owns the
     conversation and the bot is paused. Find-or-creates the conversation."""
     now = datetime.utcnow()
@@ -216,6 +251,8 @@ def record_user_message(db: Session, channel: Channel, session_id: str, content:
     db.add(Message(organization_id=channel.organization_id, conversation_id=conv.id,
                    role="user", content=content, tokens=0))
     conv.last_message_at = now
+    if ip:
+        conv.last_ip = ip
     db.commit()
     db.refresh(conv)
     return conv

@@ -15,8 +15,12 @@ class Conversation(Base):
     bot_id = Column(Integer, ForeignKey("bots.id"), index=True, nullable=False)
     channel_id = Column(Integer, ForeignKey("channels.id"), index=True, nullable=True)
 
-    # End-user identity on the channel (e.g. WhatsApp phone number).
+    # End-user identity on the channel (e.g. WhatsApp phone number, or a website
+    # widget session token).
     external_user_id = Column(String, index=True, nullable=True)
+    # Last client IP seen for this visitor (captured on each turn) — lets an agent
+    # block by IP, which isn't otherwise persisted.
+    last_ip = Column(String, nullable=True)
 
     # bot | needs_human | human | resolved   (drives the handoff inbox)
     status = Column(String, default="bot", nullable=False)
