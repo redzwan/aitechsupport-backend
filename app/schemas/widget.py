@@ -131,6 +131,11 @@ class BlockRequest(BaseModel):
     reason: str | None = Field(default=None, max_length=500)
 
 
+class ConversationTransferRequest(BaseModel):
+    target_user_id: int = Field(gt=0)
+    note: str | None = Field(default=None, max_length=500)
+
+
 class AgentReplyRequest(BaseModel):
     content: str = Field(min_length=1, max_length=4000)
 

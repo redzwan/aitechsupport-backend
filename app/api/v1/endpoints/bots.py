@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 from app.db.session import get_db
 from app.api.deps import get_current_user, get_agent_user
 from app.core import rag, embeddings, llm, models_catalog, billing, widget, analytics
-from app.core.events import bus, conv_topic, org_topic
+from app.core.events import bus, conv_topic, org_topic, user_topic
 from app.core.settings import settings
 from app.models.user import User
 from app.models.bot import Bot
@@ -30,6 +30,7 @@ from app.schemas.widget import (
     AgentReplyRequest,
     WidgetAnalyticsOut,
     BlockRequest,
+    ConversationTransferRequest,
 )
 
 logger = logging.getLogger(__name__)
@@ -425,6 +426,58 @@ def release_conversation(
     db.commit()
     db.refresh(conv)
     bus.publish(conv_topic(conv.id), {"type": "status", "status": conv.status})
+    bus.publish(org_topic(conv.organization_id), {"type": "ping", "conv_id": conv.id})
+    return _conv_out_full(conv, db, bot)
+
+
+@router.post("/{bot_id}/conversations/{conv_id}/transfer", response_model=ConversationOut)
+def transfer_conversation(
+    bot_id: int,
+    conv_id: int,
+    payload: ConversationTransferRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_agent_user),
+):
+    """Hand this conversation to another agent in the same org. Keeps the bot paused
+    (status stays 'human'); notifies the target over their directed stream."""
+    bot = _get_owned_bot(bot_id, db, user)
+    conv = _owned_conversation(bot, conv_id, db)
+    # Only the current owner (or an owner/admin) may transfer.
+    if conv.assigned_user_id not in (None, user.id) and user.role not in ("owner", "admin"):
+        raise HTTPException(status_code=403, detail="This conversation is handled by another agent.")
+    # Target must be active staff in THIS org (404, not 403, to avoid cross-tenant id probing).
+    target = (
+        db.query(User)
+        .filter(
+            User.id == payload.target_user_id,
+            User.organization_id == conv.organization_id,
+            User.is_active.is_(True),
+        )
+        .first()
+    )
+    if target is None or target.role not in ("owner", "admin", "agent"):
+        raise HTTPException(status_code=404, detail="Agent not found")
+    if target.id == conv.assigned_user_id:
+        raise HTTPException(status_code=400, detail="Already assigned to that agent.")
+
+    now = datetime.utcnow()
+    conv.assigned_user_id = target.id
+    conv.assigned_at = now
+    conv.status = "human"  # keep the bot paused through the handoff
+    conv.last_agent_at = now
+    db.commit()
+    db.refresh(conv)
+
+    note = (payload.note or "").strip()[:500] or None
+    bus.publish(user_topic(target.id), {
+        "type": "transfer",
+        "conv_id": conv.id,
+        "bot_id": bot.id,
+        "from_user_id": user.id,
+        "from_name": user.full_name or user.email,
+        "to_user_id": target.id,
+        "note": note,
+    })
     bus.publish(org_topic(conv.organization_id), {"type": "ping", "conv_id": conv.id})
     return _conv_out_full(conv, db, bot)
 
