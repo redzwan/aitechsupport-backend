@@ -115,6 +115,12 @@ class ConversationMessageOut(BaseModel):
         from_attributes = True
 
 
+class QueueRow(ConversationOut):
+    """A conversation in the org-wide agent queue, tagged with its bot/site."""
+    bot_id: int
+    bot_name: str
+
+
 class ConversationStatusUpdate(BaseModel):
     status: str = Field(pattern="^(bot|needs_human|human|resolved)$")
 

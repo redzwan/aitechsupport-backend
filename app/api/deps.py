@@ -48,3 +48,10 @@ def get_agent_user(user: User = Depends(get_current_user)) -> User:
     if user.role not in ("owner", "admin", "agent"):
         raise HTTPException(status_code=403, detail="Agent access required")
     return user
+
+
+def get_org_admin(user: User = Depends(get_current_user)) -> User:
+    """Guard for managing an org's staff (create/deactivate agents). Owner or admin."""
+    if user.role not in ("owner", "admin"):
+        raise HTTPException(status_code=403, detail="Owner or admin access required")
+    return user
