@@ -37,12 +37,25 @@ class EventBus:
         self._subs[topic].add(q)
         return q
 
+    async def subscribe_many(self, topics: list[str]) -> asyncio.Queue:
+        """One queue fed by several topics — lets a single SSE loop multiplex an
+        org broadcast topic and a directed per-user topic without a merge race."""
+        self._ensure_loop()
+        q: asyncio.Queue = asyncio.Queue(maxsize=200)
+        for t in topics:
+            self._subs[t].add(q)
+        return q
+
     def unsubscribe(self, topic: str, q: asyncio.Queue) -> None:
         subs = self._subs.get(topic)
         if subs:
             subs.discard(q)
             if not subs:
                 self._subs.pop(topic, None)
+
+    def unsubscribe_many(self, topics: list[str], q: asyncio.Queue) -> None:
+        for t in topics:
+            self.unsubscribe(t, q)
 
     def publish(self, topic: str, data: dict) -> None:
         """Thread-safe: enqueue to every subscriber of `topic`. No-op if nobody is
@@ -72,3 +85,8 @@ def conv_topic(conv_id: int) -> str:
 
 def org_topic(org_id: int) -> str:
     return f"org:{org_id}"
+
+
+def user_topic(user_id: int) -> str:
+    """Directed delivery to one agent (transfers, DMs, game moves meant for them)."""
+    return f"user:{user_id}"
