@@ -12,6 +12,7 @@ from app.models.payment import Payment  # noqa: F401
 from app.models.blocked_visitor import BlockedVisitor  # noqa: F401
 from app.models.org_invite import OrgInvite  # noqa: F401
 from app.models.internal_message import InternalMessage  # noqa: F401
+from app.models.game_session import GameSession  # noqa: F401
 from app.models.setting import Setting  # noqa: F401
 from app.models.email_template import EmailTemplate  # noqa: F401
 from app.models.page import Page  # noqa: F401

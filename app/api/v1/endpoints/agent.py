@@ -23,9 +23,11 @@ from app.models.bot import Bot
 from app.models.channel import Channel
 from app.models.conversation import Conversation, Message
 from app.models.internal_message import InternalMessage
+from app.models.game_session import GameSession
 from app.schemas.widget import QueueRow
 from app.schemas.presence import PresenceUpdate, PresenceRow
 from app.schemas.chat import DmSend, DmOut
+from app.schemas.game import GameCreate, MoveSend, GameOut
 
 router = APIRouter()
 
@@ -279,6 +281,128 @@ def send_dm(payload: DmSend, db: Session = Depends(get_db), user: User = Depends
         content=msg.content,
         created_at=msg.created_at,
     )
+
+
+# ===== Multiplayer chess (turn-based SAN relay) =====
+
+def _game_names(db: Session, g: GameSession) -> dict:
+    users = db.query(User).filter(User.id.in_([g.white_user_id, g.black_user_id])).all()
+    return {u.id: (u.full_name or u.email) for u in users}
+
+
+def _game_out(g: GameSession, db: Session, viewer_id: int) -> GameOut:
+    moves = json.loads(g.moves or "[]")
+    names = _game_names(db, g)
+    return GameOut(
+        id=g.id,
+        kind=g.kind,
+        white_user_id=g.white_user_id,
+        black_user_id=g.black_user_id,
+        white_name=names.get(g.white_user_id, ""),
+        black_name=names.get(g.black_user_id, ""),
+        status=g.status,
+        result=g.result,
+        moves=moves,
+        turn="white" if len(moves) % 2 == 0 else "black",
+        your_color="white" if viewer_id == g.white_user_id else "black",
+        created_at=g.created_at,
+    )
+
+
+def _participant_game(db: Session, game_id: int, user: User) -> GameSession:
+    g = (
+        db.query(GameSession)
+        .filter(GameSession.id == game_id, GameSession.organization_id == user.organization_id)
+        .first()
+    )
+    if g is None or user.id not in (g.white_user_id, g.black_user_id):
+        raise HTTPException(status_code=404, detail="Game not found")
+    return g
+
+
+@router.post("/games", response_model=GameOut, status_code=201)
+def create_game(payload: GameCreate, db: Session = Depends(get_db), user: User = Depends(get_agent_user)):
+    """Invite a teammate to a chess game (inviter plays white). Notifies them."""
+    if payload.opponent_user_id == user.id:
+        raise HTTPException(status_code=400, detail="Pick a teammate to play against.")
+    opp = (
+        db.query(User)
+        .filter(User.id == payload.opponent_user_id, User.organization_id == user.organization_id, User.is_active.is_(True))
+        .first()
+    )
+    if opp is None or opp.role not in ("owner", "admin", "agent"):
+        raise HTTPException(status_code=404, detail="Teammate not found")
+
+    g = GameSession(
+        organization_id=user.organization_id,
+        kind="chess",
+        white_user_id=user.id,
+        black_user_id=opp.id,
+        moves="[]",
+        status="active",
+    )
+    db.add(g)
+    db.commit()
+    db.refresh(g)
+    names = _game_names(db, g)
+    bus.publish(user_topic(opp.id), {
+        "type": "game", "event": "invite", "game_id": g.id,
+        "from_user_id": user.id, "from_name": user.full_name or user.email, "to_user_id": opp.id,
+        "white_user_id": g.white_user_id, "black_user_id": g.black_user_id,
+        "white_name": names.get(g.white_user_id, ""), "black_name": names.get(g.black_user_id, ""),
+    })
+    return _game_out(g, db, user.id)
+
+
+@router.get("/games/{game_id}", response_model=GameOut)
+def get_game(game_id: int, db: Session = Depends(get_db), user: User = Depends(get_agent_user)):
+    return _game_out(_participant_game(db, game_id, user), db, user.id)
+
+
+@router.post("/games/{game_id}/move", response_model=GameOut)
+def game_move(game_id: int, payload: MoveSend, db: Session = Depends(get_db), user: User = Depends(get_agent_user)):
+    """Relay a SAN move. Enforces active + participant + whose-turn; legality is
+    validated client-side (both run the same deterministic engine)."""
+    g = _participant_game(db, game_id, user)
+    if g.status != "active":
+        raise HTTPException(status_code=409, detail="This game is already over.")
+    my_color = "white" if user.id == g.white_user_id else "black"
+    moves = json.loads(g.moves or "[]")
+    turn = "white" if len(moves) % 2 == 0 else "black"
+    if my_color != turn:
+        raise HTTPException(status_code=409, detail="It's not your turn.")
+
+    moves.append(payload.san)
+    g.moves = json.dumps(moves)
+    if payload.result in ("white", "black", "draw"):
+        g.status = "finished"
+        g.result = payload.result
+    db.commit()
+    db.refresh(g)
+
+    opp_id = g.black_user_id if my_color == "white" else g.white_user_id
+    bus.publish(user_topic(opp_id), {
+        "type": "game", "event": "move", "game_id": g.id, "san": payload.san,
+        "by_user_id": user.id, "ply": len(moves), "status": g.status, "result": g.result,
+    })
+    return _game_out(g, db, user.id)
+
+
+@router.post("/games/{game_id}/resign", response_model=GameOut)
+def game_resign(game_id: int, db: Session = Depends(get_db), user: User = Depends(get_agent_user)):
+    """Resign — the opponent wins."""
+    g = _participant_game(db, game_id, user)
+    if g.status == "active":
+        my_color = "white" if user.id == g.white_user_id else "black"
+        g.status = "finished"
+        g.result = "black" if my_color == "white" else "white"
+        db.commit()
+        db.refresh(g)
+        opp_id = g.black_user_id if my_color == "white" else g.white_user_id
+        bus.publish(user_topic(opp_id), {
+            "type": "game", "event": "end", "game_id": g.id, "result": g.result, "by_user_id": user.id,
+        })
+    return _game_out(g, db, user.id)
 
 
 # ===== Unified per-agent realtime stream =====
