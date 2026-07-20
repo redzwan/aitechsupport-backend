@@ -36,10 +36,23 @@ MANAGED_KEYS = {
     "STORAGE_BUCKET": "STORAGE_BUCKET",
     "STORAGE_SECURE": "STORAGE_SECURE",         # "true" | "false" (https)
     "STORAGE_ENABLED": "STORAGE_ENABLED",       # "true" | "false"
+    # Billplz payment gateway (Malaysian FPX / card collections)
+    "BILLPLZ_API_KEY": "BILLPLZ_API_KEY",
+    "BILLPLZ_X_SIGNATURE_KEY": "BILLPLZ_X_SIGNATURE_KEY",  # webhook signature secret
+    "BILLPLZ_COLLECTION_ID": "BILLPLZ_COLLECTION_ID",
+    "BILLPLZ_SANDBOX": "BILLPLZ_SANDBOX",       # "true" | "false" (test vs live)
+    "BILLING_ENABLED": "BILLING_ENABLED",       # "true" | "false" (payment kill-switch)
 }
 
 # Keys whose value must never be returned to the client in full.
-SECRET_KEYS = {"OPENROUTER_API_KEY", "VOYAGE_API_KEY", "SMTP_PASSWORD", "STORAGE_SECRET_KEY"}
+SECRET_KEYS = {
+    "OPENROUTER_API_KEY",
+    "VOYAGE_API_KEY",
+    "SMTP_PASSWORD",
+    "STORAGE_SECRET_KEY",
+    "BILLPLZ_API_KEY",
+    "BILLPLZ_X_SIGNATURE_KEY",
+}
 
 
 def get(key: str, default: str = "") -> str:

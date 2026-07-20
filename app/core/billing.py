@@ -1,20 +1,34 @@
-"""Subscription + token-metering helpers.
+"""Subscription + token-metering helpers, plus Billplz gateway config.
 
-Billplz payment is intentionally OFF (kill-switch) — self-serve is limited to the
-free plan; paid plans are assigned by a platform admin. Real payment gets wired here later.
+Paid-plan self-serve stays gated on BILLING_ENABLED + configured Billplz
+credentials; until then a platform admin assigns paid plans manually. The
+Billplz connection details (API key, X-Signature key, collection, sandbox
+toggle) resolve from config_store — DB settings first, `.env` as fallback — so
+an admin can wire the gateway from the panel without a redeploy, same pattern as
+storage/SMTP.
 """
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timedelta
 
+import httpx
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.core import config_store
+from app.core.settings import settings
 from app.models.subscription import Subscription
 from app.models.package import Package
 
+logger = logging.getLogger(__name__)
+
 PERIOD_DAYS = 30
 DEFAULT_PLAN = "free"
+
+# Billplz API roots. Sandbox is a fully separate environment with its own keys.
+BILLPLZ_LIVE_BASE = "https://www.billplz.com/api"
+BILLPLZ_SANDBOX_BASE = "https://www.billplz-sandbox.com/api"
 
 
 def package_for(db: Session, slug: str) -> Package | None:
@@ -92,3 +106,66 @@ def subscribe(db: Session, organization_id: int, package: Package) -> Subscripti
     db.commit()
     db.refresh(sub)
     return sub
+
+
+# ===== Billplz payment gateway =====
+
+def _as_bool(raw: str, default: bool) -> bool:
+    if raw is None or raw == "":
+        return default
+    return str(raw).strip().lower() in ("true", "1", "yes", "on")
+
+
+def billplz_config(db: Session | None = None) -> dict:
+    """Resolve Billplz config (DB settings first, env fallback via config_store)."""
+    g = config_store.get
+    return {
+        "api_key": g("BILLPLZ_API_KEY") or settings.BILLPLZ_API_KEY,
+        "x_signature_key": g("BILLPLZ_X_SIGNATURE_KEY") or settings.BILLPLZ_X_SIGNATURE_KEY,
+        "collection_id": g("BILLPLZ_COLLECTION_ID") or settings.BILLPLZ_COLLECTION_ID,
+        "sandbox": _as_bool(g("BILLPLZ_SANDBOX"), settings.BILLPLZ_SANDBOX),
+        "enabled": _as_bool(g("BILLING_ENABLED"), settings.BILLING_ENABLED),
+    }
+
+
+def billplz_api_base(sandbox: bool) -> str:
+    return BILLPLZ_SANDBOX_BASE if sandbox else BILLPLZ_LIVE_BASE
+
+
+def billplz_is_configured(db: Session | None = None) -> bool:
+    """True when billing is enabled and the gateway can create bills.
+
+    A collection is required to create bills, so it's part of "configured" — the
+    X-Signature key is only needed to verify webhooks, so it's not gated here.
+    """
+    cfg = billplz_config(db)
+    return cfg["enabled"] and bool(cfg["api_key"]) and bool(cfg["collection_id"])
+
+
+def test_billplz(db: Session | None = None) -> dict:
+    """Verify the API key (and collection, if set) reach Billplz. Raises on failure.
+
+    Billplz authenticates with the API key as HTTP Basic username and a blank
+    password. When a collection id is set we fetch that collection (proves the
+    key AND the collection exist in the selected environment); otherwise we list
+    collections, which still proves the key + sandbox choice are valid.
+    """
+    cfg = billplz_config(db)
+    if not cfg["api_key"]:
+        raise RuntimeError("Enter a Billplz API key before testing.")
+    base = billplz_api_base(cfg["sandbox"])
+    coll = cfg["collection_id"]
+    url = f"{base}/v3/collections/{coll}" if coll else f"{base}/v3/collections"
+    try:
+        resp = httpx.get(url, auth=(cfg["api_key"], ""), timeout=15)
+    except httpx.HTTPError as exc:
+        raise RuntimeError(f"Could not reach Billplz: {exc}") from exc
+    if resp.status_code == 401:
+        env = "sandbox" if cfg["sandbox"] else "production"
+        raise RuntimeError(f"Billplz rejected the API key for the {env} environment (401).")
+    if resp.status_code == 404 and coll:
+        env = "sandbox" if cfg["sandbox"] else "production"
+        raise RuntimeError(f"Collection '{coll}' was not found in the {env} environment (404).")
+    if resp.status_code >= 400:
+        raise RuntimeError(f"Billplz returned {resp.status_code}: {resp.text[:200]}")
+    return {"sandbox": cfg["sandbox"], "collection_id": coll or None}

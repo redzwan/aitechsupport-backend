@@ -15,7 +15,14 @@ from app.models.page import Page
 from app.schemas.content import HomepageUpdate, PageAdminOut, PageCreate, PageUpdate
 from app.schemas.setting import SettingsUpdate, SettingsOut
 from app.schemas.storage import StorageSettingsOut, StorageSettingsUpdate
-from app.schemas.billing import PackageOut, PackageUpsert, ClientRow, SubscribeRequest
+from app.schemas.billing import (
+    PackageOut,
+    PackageUpsert,
+    ClientRow,
+    SubscribeRequest,
+    BillplzSettingsOut,
+    BillplzSettingsUpdate,
+)
 from app.schemas.email import (
     SMTPSettingsOut,
     SMTPSettingsUpdate,
@@ -315,6 +322,53 @@ def test_storage(db: Session = Depends(get_db), admin: User = Depends(get_platfo
         storage.test_connection(db)
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=f"Storage check failed: {exc}")
+
+
+# ===== Billplz payment gateway settings =====
+
+@router.get("/billplz", response_model=BillplzSettingsOut)
+def get_billplz(db: Session = Depends(get_db), admin: User = Depends(get_platform_admin)):
+    """Current Billplz config. API/signature keys are never returned in full."""
+    cfg = billing.billplz_config(db)
+    return BillplzSettingsOut(
+        enabled=cfg["enabled"],
+        sandbox=cfg["sandbox"],
+        api_key_set=bool(cfg["api_key"]),
+        api_key_hint=_hint(cfg["api_key"]),
+        x_signature_key_set=bool(cfg["x_signature_key"]),
+        x_signature_key_hint=_hint(cfg["x_signature_key"]),
+        collection_id=cfg["collection_id"],
+        configured=billing.billplz_is_configured(db),
+    )
+
+
+@router.put("/billplz", response_model=BillplzSettingsOut)
+def update_billplz(payload: BillplzSettingsUpdate, db: Session = Depends(get_db), admin: User = Depends(get_platform_admin)):
+    """Store provided Billplz fields. Blank/omitted secrets are left unchanged."""
+    updates: dict[str, str] = {}
+    if payload.enabled is not None:
+        updates["BILLING_ENABLED"] = "true" if payload.enabled else "false"
+    if payload.sandbox is not None:
+        updates["BILLPLZ_SANDBOX"] = "true" if payload.sandbox else "false"
+    if payload.api_key is not None and payload.api_key.strip():
+        updates["BILLPLZ_API_KEY"] = payload.api_key.strip()
+    if payload.x_signature_key is not None and payload.x_signature_key.strip():
+        updates["BILLPLZ_X_SIGNATURE_KEY"] = payload.x_signature_key.strip()
+    # collection_id is not secret; an explicit empty string clears it.
+    if payload.collection_id is not None:
+        updates["BILLPLZ_COLLECTION_ID"] = payload.collection_id.strip()
+    if updates:
+        config_store.set_many(db, updates)
+    return get_billplz(db=db, admin=admin)
+
+
+@router.post("/billplz/test", status_code=204)
+def test_billplz(db: Session = Depends(get_db), admin: User = Depends(get_platform_admin)):
+    """Verify the API key (and collection, if set) reach Billplz."""
+    try:
+        billing.test_billplz(db)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"Billplz check failed: {exc}")
 
 
 # ===== Homepage content (structured CMS) =====

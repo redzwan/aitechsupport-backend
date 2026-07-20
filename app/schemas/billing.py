@@ -51,3 +51,25 @@ class ClientRow(BaseModel):
     tokens_quota: int
     bots: int
     created_at: str | None = None
+
+
+class BillplzSettingsOut(BaseModel):
+    """Billplz gateway config for the admin panel. Secret keys are never returned
+    in full — only whether they're set + a last-4 hint."""
+    enabled: bool
+    sandbox: bool
+    api_key_set: bool
+    api_key_hint: str | None = None
+    x_signature_key_set: bool
+    x_signature_key_hint: str | None = None
+    collection_id: str
+    configured: bool  # enabled + api key + collection all present
+
+
+class BillplzSettingsUpdate(BaseModel):
+    """Admin submits fields to store. Omit or leave a secret blank to keep it."""
+    enabled: bool | None = None
+    sandbox: bool | None = None
+    api_key: str | None = None            # blank -> keep existing
+    x_signature_key: str | None = None    # blank -> keep existing
+    collection_id: str | None = None
