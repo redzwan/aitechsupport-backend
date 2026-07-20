@@ -151,7 +151,7 @@ def is_blocked(db: Session, channel: Channel, session_id: str,
 
 def record_turn(
     db: Session, channel: Channel, session_id: str, question: str, answer: str, tokens: int,
-    ip: str | None = None,
+    ip: str | None = None, source_url: str | None = None,
 ) -> Conversation:
     """Find-or-create the visitor's conversation and append the user + assistant messages."""
     conv = (
@@ -183,6 +183,8 @@ def record_turn(
     conv.last_message_at = now
     if ip:
         conv.last_ip = ip
+    if source_url and not conv.source_url:
+        conv.source_url = source_url
     db.commit()
     return conv
 
@@ -200,7 +202,8 @@ def find_conversation(db: Session, channel: Channel, session_id: str) -> Convers
 
 
 def mark_handoff(db: Session, channel: Channel, session_id: str, name: str,
-                 email: str, message: str, ip: str | None = None) -> Conversation:
+                 email: str, message: str, ip: str | None = None,
+                 source_url: str | None = None) -> Conversation:
     """Flag the visitor's conversation as needing a human + store their contact
     (lead-capture). Creates the conversation if they hadn't chatted yet."""
     now = datetime.utcnow()
@@ -223,6 +226,8 @@ def mark_handoff(db: Session, channel: Channel, session_id: str, name: str,
     conv.last_message_at = now
     if ip:
         conv.last_ip = ip
+    if source_url and not conv.source_url:
+        conv.source_url = source_url
     if message and message.strip():
         db.add(Message(organization_id=channel.organization_id, conversation_id=conv.id,
                        role="user", content=message.strip()[:4000], tokens=0))
@@ -232,7 +237,7 @@ def mark_handoff(db: Session, channel: Channel, session_id: str, name: str,
 
 
 def record_user_message(db: Session, channel: Channel, session_id: str, content: str,
-                        ip: str | None = None) -> Conversation:
+                        ip: str | None = None, source_url: str | None = None) -> Conversation:
     """Store ONLY the visitor's message (no bot answer) — used when a human owns the
     conversation and the bot is paused. Find-or-creates the conversation."""
     now = datetime.utcnow()
@@ -253,6 +258,8 @@ def record_user_message(db: Session, channel: Channel, session_id: str, content:
     conv.last_message_at = now
     if ip:
         conv.last_ip = ip
+    if source_url and not conv.source_url:
+        conv.source_url = source_url
     db.commit()
     db.refresh(conv)
     return conv

@@ -80,6 +80,7 @@ def agent_queue(
             channel_kind=kinds.get(c.channel_id),
             contact_name=c.contact_name,
             contact_email=c.contact_email,
+            source_url=c.source_url,
             needs_human_at=c.needs_human_at,
             assigned_user_id=c.assigned_user_id,
             assignee_name=names.get(c.assigned_user_id),

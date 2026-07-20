@@ -93,6 +93,7 @@ class ConversationOut(BaseModel):
     channel_kind: str | None = None
     contact_name: str | None = None
     contact_email: str | None = None
+    source_url: str | None = None
     needs_human_at: datetime | None = None
     assigned_user_id: int | None = None
     assignee_name: str | None = None

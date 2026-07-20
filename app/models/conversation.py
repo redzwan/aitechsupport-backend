@@ -21,6 +21,9 @@ class Conversation(Base):
     # Last client IP seen for this visitor (captured on each turn) — lets an agent
     # block by IP, which isn't otherwise persisted.
     last_ip = Column(String, nullable=True)
+    # Website the visitor came from (widget embed Origin, e.g. https://kerjakan.my),
+    # captured on the first turn so the agent sees the source site.
+    source_url = Column(String, nullable=True)
 
     # bot | needs_human | human | resolved   (drives the handoff inbox)
     status = Column(String, default="bot", nullable=False)

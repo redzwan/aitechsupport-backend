@@ -79,6 +79,12 @@ def _client_ip(request: Request) -> str:
     return request.client.host if request.client else "unknown"
 
 
+def _origin(request: Request) -> str | None:
+    """The site the widget is embedded on (browser-set Origin, or Referer)."""
+    o = request.headers.get("origin") or request.headers.get("referer")
+    return o.strip()[:300] if o else None
+
+
 def _ensure_not_blocked(db: Session, channel, session_id: str, ip: str) -> None:
     """403 if this visitor is blocked on this bot (by session, IP, or their stored
     email). Runs at ingress, before any GPU/quota spend."""
@@ -144,12 +150,13 @@ def widget_chat(
     channel, bot = _resolve_and_ratelimit(public_key, request, db)
     session_id = widget.clean_session_id(payload.session_id)
     ip = _client_ip(request)
+    src = _origin(request)
     _ensure_not_blocked(db, channel, session_id, ip)
 
     # Bot-pause: a human owns this conversation -> store the visitor turn, no inference.
     paused = _bot_paused(db, channel, session_id)
     if paused:
-        conv = widget.record_user_message(db, channel, session_id, payload.question, ip=ip)
+        conv = widget.record_user_message(db, channel, session_id, payload.question, ip=ip, source_url=src)
         bus.publish(org_topic(channel.organization_id), {"type": "ping", "conv_id": conv.id})
         return PublicChatResponse(answer="", session_id=session_id, status=paused, handoff=True)
 
@@ -170,7 +177,7 @@ def widget_chat(
 
     if tokens:
         billing.record_usage(db, channel.organization_id, tokens)
-    conv = widget.record_turn(db, channel, session_id, payload.question, answer, tokens, ip=ip)
+    conv = widget.record_turn(db, channel, session_id, payload.question, answer, tokens, ip=ip, source_url=src)
     # tokens == 0 means the no-context fallback fired -> suggest a human.
     return PublicChatResponse(answer=answer, session_id=session_id, status=conv.status,
                               handoff=(tokens == 0))
@@ -191,13 +198,14 @@ def widget_chat_stream(
     session_id = widget.clean_session_id(payload.session_id)
     question = payload.question
     ip = _client_ip(request)
+    src = _origin(request)
     _ensure_not_blocked(db, channel, session_id, ip)
 
     # Bot-pause: a human owns this conversation -> store the visitor turn + a terminal
     # 'done' event (no inference), so the widget flips to polling for agent replies.
     paused = _bot_paused(db, channel, session_id)
     if paused:
-        pconv = widget.record_user_message(db, channel, session_id, question, ip=ip)
+        pconv = widget.record_user_message(db, channel, session_id, question, ip=ip, source_url=src)
         bus.publish(org_topic(channel.organization_id), {"type": "ping", "conv_id": pconv.id})
 
         def paused_stream():
@@ -237,7 +245,7 @@ def widget_chat_stream(
                     tokens = ev["tokens"]
             if tokens:
                 billing.record_usage(sdb, org_id, tokens)
-            conv = widget.record_turn(sdb, channel, session_id, question, full_text, tokens, ip=ip)
+            conv = widget.record_turn(sdb, channel, session_id, question, full_text, tokens, ip=ip, source_url=src)
             recorded = True
             yield _sse({"type": "done", "session_id": session_id, "status": conv.status,
                         "handoff": (tokens == 0)})
@@ -254,7 +262,7 @@ def widget_chat_stream(
                     billing.record_usage(sdb, org_id, tokens or max(1, len(full_text) // 4))
                     again = widget.resolve_widget(sdb, public_key)
                     if again is not None:
-                        widget.record_turn(sdb, again[0], session_id, question, full_text, tokens, ip=ip)
+                        widget.record_turn(sdb, again[0], session_id, question, full_text, tokens, ip=ip, source_url=src)
                 except Exception:  # noqa: BLE001
                     pass
             sdb.close()
@@ -291,7 +299,8 @@ def widget_handoff(
     # Block by session/IP, and also the email they're submitting right now.
     if widget.is_blocked(db, channel, session_id, ip=ip, email=payload.email):
         raise HTTPException(status_code=403, detail="chat_unavailable")
-    conv = widget.mark_handoff(db, channel, session_id, payload.name, payload.email, payload.message, ip=ip)
+    conv = widget.mark_handoff(db, channel, session_id, payload.name, payload.email, payload.message,
+                               ip=ip, source_url=_origin(request))
     bus.publish(org_topic(channel.organization_id), {"type": "ping", "conv_id": conv.id})
     background.add_task(_notify_tenant, channel.organization_id, bot.name,
                         payload.name, payload.email, payload.message or "")
