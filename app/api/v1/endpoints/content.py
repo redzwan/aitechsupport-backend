@@ -71,11 +71,13 @@ def _send_contact(name: str, from_email: str, message: str) -> None:
             logger.info("contact email skipped (no recipient configured)")
             return
         subject = f"Contact form: {name}"
-        body = (
-            f"<p><b>Name:</b> {html.escape(name)}<br>"
-            f"<b>Email:</b> {html.escape(from_email)}</p>"
-            f"<p>{html.escape(message)}</p>"
+        inner = (
+            '<h2 style="margin:0 0 14px;font-size:19px;color:#0f172a;">New contact-form message</h2>'
+            f'<p style="margin:0 0 14px;"><strong>Name:</strong> {html.escape(name)}<br>'
+            f'<strong>Email:</strong> {html.escape(from_email)}</p>'
+            f'<p style="margin:0;white-space:pre-wrap;">{html.escape(message)}</p>'
         )
+        body = email.wrap_email(inner, preheader=f"New message from {name}")
         try:
             email.send(db, to, subject, body)
         except Exception:  # noqa: BLE001

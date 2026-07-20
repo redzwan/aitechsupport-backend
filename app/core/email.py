@@ -11,6 +11,7 @@ import ssl
 import html
 import smtplib
 import logging
+from datetime import datetime
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.utils import formataddr
@@ -19,11 +20,79 @@ from sqlalchemy.orm import Session
 
 from app.db.session import SessionLocal
 from app.core import config_store
+from app.core.settings import settings
 from app.models.email_template import EmailTemplate
 
 logger = logging.getLogger(__name__)
 
 _TAG_RE = re.compile(r"<[^>]+>")
+
+# ===== Branded, email-client-safe HTML shell =====
+# Transactional bodies hold just the message; the professional chrome (header,
+# footer, container) is applied here in code so every email is consistent and
+# admins only edit the content.
+BRAND_NAME = "AiTechSupport"
+BRAND_URL = "https://aitechsupport.my"
+BRAND_ACCENT = "#4f46e5"
+_FONT = "-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif"
+
+# Sample values for the admin template preview (mirrors the real send context).
+SAMPLE_CONTEXT = {
+    "name": "Jane Doe",
+    "email": "jane@example.com",
+    "dashboard_url": f"{settings.FRONTEND_URL}/dashboard",
+    "plan": "Pro",
+    "used_pct": "85",
+    "tokens_remaining": "15,000",
+}
+
+
+def button(label: str, url: str) -> str:
+    """A table-based CTA button that renders across major email clients."""
+    return (
+        '<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:6px 0 2px;">'
+        f'<tr><td align="center" bgcolor="{BRAND_ACCENT}" style="border-radius:8px;">'
+        f'<a href="{url}" target="_blank" style="display:inline-block;padding:12px 26px;font-family:{_FONT};'
+        'font-size:14px;font-weight:600;line-height:1;color:#ffffff;text-decoration:none;border-radius:8px;">'
+        f'{label}</a></td></tr></table>'
+    )
+
+
+def wrap_email(inner_html: str, preheader: str = "") -> str:
+    """Wrap message content in the branded, responsive email shell."""
+    year = datetime.utcnow().year
+    pre = (
+        '<span style="display:none!important;visibility:hidden;opacity:0;color:transparent;'
+        f'height:0;width:0;overflow:hidden;mso-hide:all;">{html.escape(preheader)}</span>'
+        if preheader else ""
+    )
+    return (
+        '<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width,initial-scale=1">'
+        '<meta http-equiv="x-ua-compatible" content="IE=edge">'
+        '<meta name="x-apple-disable-message-reformatting">'
+        f'<title>{BRAND_NAME}</title></head>'
+        '<body style="margin:0;padding:0;background:#eef2f7;">'
+        f'{pre}'
+        '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" '
+        'style="background:#eef2f7;"><tr><td align="center" style="padding:28px 12px;">'
+        '<table role="presentation" width="600" cellpadding="0" cellspacing="0" border="0" '
+        'style="width:600px;max-width:600px;background:#ffffff;border-radius:12px;overflow:hidden;'
+        'border:1px solid #e2e8f0;">'
+        f'<tr><td style="height:4px;line-height:4px;font-size:4px;background:{BRAND_ACCENT};">&nbsp;</td></tr>'
+        '<tr><td style="padding:24px 32px 6px;">'
+        f'<span style="font-family:{_FONT};font-size:20px;font-weight:700;letter-spacing:-.2px;color:#0f172a;">'
+        f'AiTech<span style="color:{BRAND_ACCENT};">Support</span></span></td></tr>'
+        f'<tr><td style="padding:10px 32px 28px;font-family:{_FONT};font-size:15px;line-height:1.65;color:#334155;">'
+        f'{inner_html}</td></tr>'
+        '<tr><td style="padding:20px 32px;background:#f8fafc;border-top:1px solid #e9eef5;">'
+        f'<p style="margin:0 0 4px;font-family:{_FONT};font-size:12px;line-height:1.6;color:#94a3b8;">'
+        f'{BRAND_NAME} — AI customer support for your website &amp; WhatsApp.</p>'
+        f'<p style="margin:0;font-family:{_FONT};font-size:12px;line-height:1.6;color:#94a3b8;">'
+        f'<a href="{BRAND_URL}" style="color:{BRAND_ACCENT};text-decoration:none;">aitechsupport.my</a>'
+        f'&nbsp;·&nbsp;© {year} {BRAND_NAME}, built by Airevo.</p>'
+        '</td></tr></table></td></tr></table></body></html>'
+    )
 
 
 def _port(raw: str) -> int:
@@ -58,8 +127,17 @@ def _sanitize_header(value: str) -> str:
     return "".join(c for c in (value or "") if c not in "\r\n").strip()
 
 
-def _html_to_text(html: str) -> str:
-    return _TAG_RE.sub("", html).strip()
+def _html_to_text(body_html: str) -> str:
+    """Readable plain-text alternative from an HTML body (for multipart emails)."""
+    text = re.sub(r"(?is)<(style|script|head|title)[^>]*>.*?</\1>", " ", body_html)
+    text = re.sub(r"(?i)<br\s*/?>", "\n", text)
+    text = re.sub(r"(?i)</(p|div|tr|h[1-6]|li)>", "\n", text)
+    text = _TAG_RE.sub("", text)
+    text = html.unescape(text)
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r"\n[ \t]+", "\n", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
 
 
 def _render(template: str, context: dict, escape: bool = False) -> str:
@@ -76,12 +154,20 @@ def _render(template: str, context: dict, escape: bool = False) -> str:
 
 
 def render(db: Session, key: str, context: dict) -> tuple[str, str]:
-    """Return (subject, html) for a template key, with variables injected."""
+    """Return (subject, html) for a template key, with variables injected and the
+    message content wrapped in the branded shell."""
     tmpl = db.query(EmailTemplate).filter(EmailTemplate.key == key, EmailTemplate.is_active.is_(True)).first()
     if not tmpl:
         raise ValueError(f"email template '{key}' not found")
     # subject is a plain-text header (CRLF-sanitized in send); body is HTML (escape values).
-    return _render(tmpl.subject, context), _render(tmpl.body_html, context, escape=True)
+    inner = _render(tmpl.body_html, context, escape=True)
+    return _render(tmpl.subject, context), wrap_email(inner, _html_to_text(inner)[:140])
+
+
+def preview(subject: str, body_html: str) -> tuple[str, str]:
+    """Render (subject, wrapped-html) with sample values, for the admin preview."""
+    inner = _render(body_html, SAMPLE_CONTEXT, escape=True)
+    return _render(subject, SAMPLE_CONTEXT), wrap_email(inner, _html_to_text(inner)[:140])
 
 
 def send(db: Session, to_email: str, subject: str, html: str) -> None:

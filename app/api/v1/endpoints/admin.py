@@ -33,6 +33,8 @@ from app.schemas.email import (
     TestEmailRequest,
     EmailTemplateOut,
     EmailTemplateUpdate,
+    EmailPreviewRequest,
+    EmailPreviewOut,
 )
 
 router = APIRouter()
@@ -248,11 +250,16 @@ def send_test_email(payload: TestEmailRequest, db: Session = Depends(get_db), ad
     if not email_service.is_configured(db):
         raise HTTPException(status_code=503, detail="Enable and configure SMTP before sending a test.")
     try:
+        inner = (
+            '<h2 style="margin:0 0 14px;font-size:19px;color:#0f172a;">Your email is working ✅</h2>'
+            '<p style="margin:0;">This is a test email from your AiTechSupport SMTP settings. '
+            'If you received it, transactional email is configured correctly.</p>'
+        )
         email_service.send(
             db,
             payload.to_email,
             "AiTechSupport test email",
-            "<p>This is a test email from your AiTechSupport SMTP settings. If you received it, email is working. ✅</p>",
+            email_service.wrap_email(inner, preheader="SMTP test from AiTechSupport"),
         )
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=f"Send failed: {exc}")
@@ -263,6 +270,14 @@ def send_test_email(payload: TestEmailRequest, db: Session = Depends(get_db), ad
 @router.get("/email-templates", response_model=list[EmailTemplateOut])
 def list_email_templates(db: Session = Depends(get_db), admin: User = Depends(get_platform_admin)):
     return db.query(EmailTemplate).order_by(EmailTemplate.id).all()
+
+
+@router.post("/email-templates/preview", response_model=EmailPreviewOut)
+def preview_email_template(payload: EmailPreviewRequest, admin: User = Depends(get_platform_admin)):
+    """Render the given subject/body with sample values, wrapped in the branded
+    shell — so the admin previews exactly what recipients will see."""
+    subject, html_out = email_service.preview(payload.subject, payload.body_html)
+    return EmailPreviewOut(subject=subject, html=html_out)
 
 
 @router.put("/email-templates/{key}", response_model=EmailTemplateOut)

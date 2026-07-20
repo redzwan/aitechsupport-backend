@@ -51,13 +51,17 @@ def _notify_tenant(org_id: int, bot_name: str, name: str, contact_email: str, me
             ).all()
         ]
         subject = f"New chat lead for {bot_name}"
-        body_html = (
-            f"<p>A website visitor asked to talk to a human on <b>{html.escape(bot_name)}</b>.</p>"
-            f"<p><b>Name:</b> {html.escape(name)}<br>"
-            f"<b>Email:</b> {html.escape(contact_email)}</p>"
-            f"<p><b>Message:</b><br>{html.escape(message or '(none)')}</p>"
-            f"<p>Reply to them directly, or view it in your dashboard inbox.</p>"
+        inner = (
+            '<h2 style="margin:0 0 14px;font-size:19px;color:#0f172a;">New chat lead</h2>'
+            f'<p style="margin:0 0 14px;">A website visitor asked to talk to a human on '
+            f'<strong>{html.escape(bot_name)}</strong>.</p>'
+            f'<p style="margin:0 0 14px;"><strong>Name:</strong> {html.escape(name)}<br>'
+            f'<strong>Email:</strong> {html.escape(contact_email)}</p>'
+            f'<p style="margin:0 0 14px;"><strong>Message</strong><br>'
+            f'{html.escape(message or "(none)")}</p>'
+            '<p style="margin:0;color:#64748b;">Reply to them directly, or open your dashboard inbox to respond.</p>'
         )
+        body_html = email.wrap_email(inner, preheader=f"New lead from {name} on {bot_name}")
         for to in recipients:
             try:
                 email.send(db, to, subject, body_html)

@@ -43,3 +43,13 @@ class EmailTemplateUpdate(BaseModel):
     subject: str | None = None
     body_html: str | None = None
     is_active: bool | None = None
+
+
+class EmailPreviewRequest(BaseModel):
+    subject: str = ""
+    body_html: str = ""
+
+
+class EmailPreviewOut(BaseModel):
+    subject: str
+    html: str  # full email (content wrapped in the branded shell), sample values filled
