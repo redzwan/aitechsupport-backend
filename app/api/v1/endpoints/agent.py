@@ -9,10 +9,10 @@ import json
 import time
 from datetime import datetime, timedelta
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import StreamingResponse
-from sqlalchemy import func
+from sqlalchemy import func, or_, and_
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db, SessionLocal
@@ -22,8 +22,10 @@ from app.models.user import User
 from app.models.bot import Bot
 from app.models.channel import Channel
 from app.models.conversation import Conversation, Message
+from app.models.internal_message import InternalMessage
 from app.schemas.widget import QueueRow
 from app.schemas.presence import PresenceUpdate, PresenceRow
+from app.schemas.chat import DmSend, DmOut
 
 router = APIRouter()
 
@@ -185,6 +187,98 @@ def _touch_online(uid: int) -> None:
         _publish_presence(db, u)
     finally:
         db.close()
+
+
+# ===== 1:1 direct messages between agents =====
+
+@router.get("/chat", response_model=list[DmOut])
+def list_dms(
+    after: int = 0,
+    with_user: int | None = None,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_agent_user),
+):
+    """DMs involving the caller (id > after), optionally filtered to one peer.
+    Used for the initial load, per-peer thread history, and reconnect catch-up."""
+    q = db.query(InternalMessage).filter(
+        InternalMessage.organization_id == user.organization_id,
+        or_(InternalMessage.from_user_id == user.id, InternalMessage.to_user_id == user.id),
+        InternalMessage.id > max(0, after),
+    )
+    if with_user is not None:
+        q = q.filter(
+            or_(
+                and_(InternalMessage.from_user_id == user.id, InternalMessage.to_user_id == with_user),
+                and_(InternalMessage.from_user_id == with_user, InternalMessage.to_user_id == user.id),
+            )
+        )
+    rows = q.order_by(InternalMessage.id.asc()).limit(300).all()
+    sender_ids = {r.from_user_id for r in rows}
+    names = (
+        {u.id: (u.full_name or u.email) for u in db.query(User).filter(User.id.in_(sender_ids)).all()}
+        if sender_ids else {}
+    )
+    return [
+        DmOut(
+            id=r.id,
+            from_user_id=r.from_user_id,
+            from_name=names.get(r.from_user_id, ""),
+            to_user_id=r.to_user_id,
+            content=r.content,
+            created_at=r.created_at,
+        )
+        for r in rows
+    ]
+
+
+@router.post("/chat", response_model=DmOut, status_code=201)
+def send_dm(payload: DmSend, db: Session = Depends(get_db), user: User = Depends(get_agent_user)):
+    """Send a DM to a same-org teammate. Persisted + pushed to the peer (and the
+    sender's other sessions; clients dedupe by message id)."""
+    if payload.to_user_id == user.id:
+        raise HTTPException(status_code=400, detail="You can't message yourself.")
+    peer = (
+        db.query(User)
+        .filter(
+            User.id == payload.to_user_id,
+            User.organization_id == user.organization_id,
+            User.is_active.is_(True),
+        )
+        .first()
+    )
+    if peer is None or peer.role not in ("owner", "admin", "agent"):
+        raise HTTPException(status_code=404, detail="Teammate not found")
+
+    msg = InternalMessage(
+        organization_id=user.organization_id,
+        from_user_id=user.id,
+        to_user_id=peer.id,
+        content=payload.content,
+    )
+    db.add(msg)
+    db.commit()
+    db.refresh(msg)
+
+    from_name = user.full_name or user.email
+    event = {
+        "type": "chat",
+        "id": msg.id,
+        "from_user_id": user.id,
+        "from_name": from_name,
+        "to_user_id": peer.id,
+        "content": msg.content,
+        "created_at": msg.created_at.isoformat() if msg.created_at else None,
+    }
+    bus.publish(user_topic(peer.id), event)   # the recipient
+    bus.publish(user_topic(user.id), event)   # sender's other devices (deduped by id)
+    return DmOut(
+        id=msg.id,
+        from_user_id=user.id,
+        from_name=from_name,
+        to_user_id=peer.id,
+        content=msg.content,
+        created_at=msg.created_at,
+    )
 
 
 # ===== Unified per-agent realtime stream =====
