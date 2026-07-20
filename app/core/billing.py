@@ -9,6 +9,8 @@ storage/SMTP.
 """
 from __future__ import annotations
 
+import hashlib
+import hmac
 import logging
 from datetime import datetime, timedelta
 
@@ -20,6 +22,7 @@ from app.core import config_store
 from app.core.settings import settings
 from app.models.subscription import Subscription
 from app.models.package import Package
+from app.models.payment import Payment
 
 logger = logging.getLogger(__name__)
 
@@ -169,3 +172,122 @@ def test_billplz(db: Session | None = None) -> dict:
     if resp.status_code >= 400:
         raise RuntimeError(f"Billplz returned {resp.status_code}: {resp.text[:200]}")
     return {"sandbox": cfg["sandbox"], "collection_id": coll or None}
+
+
+# ===== Billplz checkout (create a bill) + webhook (activate on payment) =====
+
+def create_checkout_bill(
+    db: Session,
+    *,
+    organization_id: int,
+    package: Package,
+    buyer_email: str,
+    buyer_name: str,
+) -> tuple[Payment, str]:
+    """Create a pending Payment + a Billplz bill; return (payment, payment_url).
+
+    The Payment row is written first so a paid webhook can always be reconciled
+    even if the browser never returns. Raises RuntimeError if the gateway isn't
+    configured or the bill can't be created.
+    """
+    if not billplz_is_configured(db):
+        raise RuntimeError("Billing is not configured")
+    cfg = billplz_config(db)
+    base = billplz_api_base(cfg["sandbox"])
+    amount_cents = int(package.price_myr) * 100
+
+    payment = Payment(
+        organization_id=organization_id,
+        plan_slug=package.slug,
+        amount_cents=amount_cents,
+        status="pending",
+        sandbox=cfg["sandbox"],
+    )
+    db.add(payment)
+    db.commit()
+    db.refresh(payment)
+
+    api_prefix = settings.API_V1_STR  # e.g. "/api/v1"
+    body = {
+        "collection_id": cfg["collection_id"],
+        "email": buyer_email,
+        "name": (buyer_name or buyer_email)[:255],
+        "amount": amount_cents,  # in sen
+        "callback_url": f"{settings.API_BASE_URL}{api_prefix}/billing/webhook/billplz",
+        "redirect_url": f"{settings.FRONTEND_URL}/dashboard/billing",
+        "description": f"AiTechSupport {package.name} plan (monthly)"[:200],
+        # Redundant safety net; the Payment row is the primary bill->org/plan map.
+        "reference_1": str(organization_id),
+        "reference_2": package.slug,
+    }
+    try:
+        resp = httpx.post(f"{base}/v3/bills", auth=(cfg["api_key"], ""), data=body, timeout=30)
+    except httpx.HTTPError as exc:
+        payment.status = "failed"
+        db.commit()
+        raise RuntimeError(f"Could not reach Billplz: {exc}") from exc
+    if resp.status_code >= 400:
+        payment.status = "failed"
+        db.commit()
+        raise RuntimeError(f"Billplz bill creation failed ({resp.status_code}): {resp.text[:200]}")
+
+    bill = resp.json()
+    payment.billplz_bill_id = bill.get("id")
+    db.commit()
+    logger.info("created Billplz bill %s for org %s plan %s", bill.get("id"), organization_id, package.slug)
+    return payment, bill.get("url")
+
+
+def billplz_signature_source(data: dict) -> str:
+    """Billplz X-Signature source string: every field except x_signature, sorted
+    by key, formatted `key + value`, joined by `|`."""
+    return "|".join(f"{k}{data[k]}" for k in sorted(data) if k != "x_signature")
+
+
+def verify_billplz_signature(data: dict, x_signature: str, key: str) -> bool:
+    """Constant-time check of the Billplz callback X-Signature (HMAC-SHA256)."""
+    if not key or not x_signature:
+        return False
+    computed = hmac.new(key.encode(), billplz_signature_source(data).encode(), hashlib.sha256).hexdigest()
+    return hmac.compare_digest(computed, x_signature)
+
+
+def process_billplz_webhook(db: Session, data: dict) -> str:
+    """Verify a Billplz callback and activate the plan on payment (idempotent).
+
+    Returns a short status string for logging. Raises ValueError on a bad or
+    unverifiable signature so the endpoint can answer 400.
+    """
+    cfg = billplz_config(db)
+    key = cfg["x_signature_key"]
+    if not key:
+        raise ValueError("no X-Signature key configured")
+    if not verify_billplz_signature(data, data.get("x_signature", ""), key):
+        raise ValueError("invalid signature")
+
+    bill_id = data.get("id")
+    if not bill_id:
+        raise ValueError("missing bill id")
+
+    payment = db.query(Payment).filter(Payment.billplz_bill_id == bill_id).first()
+    if payment is None:
+        logger.warning("Billplz webhook for unknown bill %s", bill_id)
+        return "unknown-bill"
+    if payment.status == "paid":
+        return "already-paid"  # duplicate callback — no-op
+
+    paid = str(data.get("paid", "")).strip().lower() == "true"
+    if not paid:
+        return "not-paid"
+
+    package = package_for(db, payment.plan_slug)
+    if package is None:
+        logger.error("paid bill %s references missing package %s", bill_id, payment.plan_slug)
+        return "unknown-package"
+
+    subscribe(db, payment.organization_id, package)
+    payment.status = "paid"
+    payment.paid_at = datetime.utcnow()
+    db.commit()
+    logger.info("activated plan %s for org %s (bill %s)", package.slug, payment.organization_id, bill_id)
+    return "activated"

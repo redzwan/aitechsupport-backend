@@ -1,12 +1,18 @@
-from fastapi import APIRouter, Depends, HTTPException
+import logging
+from urllib.parse import parse_qsl
+
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
 from app.api.deps import get_current_user
 from app.core import billing
 from app.models.user import User
+from app.models.organization import Organization
 from app.models.package import Package
-from app.schemas.billing import PackageOut, SubscriptionOut, SubscribeRequest
+from app.schemas.billing import PackageOut, SubscriptionOut, SubscribeRequest, CheckoutOut
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -66,3 +72,72 @@ def subscribe(payload: SubscribeRequest, db: Session = Depends(get_db), user: Us
         )
     sub = billing.subscribe(db, user.organization_id, pkg)
     return _subscription_out(db, sub)
+
+
+@router.post("/checkout", response_model=CheckoutOut)
+def checkout(payload: SubscribeRequest, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """Start a plan change.
+
+    Free plan / downgrade applies immediately (no payment). A paid plan creates a
+    Billplz bill and returns its `payment_url` for the browser to redirect to; the
+    plan is activated by the webhook once payment clears.
+    """
+    pkg = billing.package_for(db, payload.package_slug)
+    if not pkg or not pkg.is_active:
+        raise HTTPException(status_code=404, detail="Package not found")
+    if user.role not in ("owner", "admin"):
+        raise HTTPException(status_code=403, detail="Only an owner can change the plan")
+
+    sub = billing.get_or_create_subscription(db, user.organization_id)
+    if pkg.slug == sub.plan:
+        raise HTTPException(status_code=400, detail="You're already on this plan.")
+
+    # Free plan / downgrade to free — no payment needed, apply now.
+    if pkg.price_myr <= 0:
+        sub = billing.subscribe(db, user.organization_id, pkg)
+        return CheckoutOut(subscription=_subscription_out(db, sub))
+
+    # Paid plan — needs a live Billplz gateway.
+    if not billing.billplz_is_configured(db):
+        raise HTTPException(
+            status_code=503,
+            detail="Online payment isn't enabled yet — contact us to activate a paid plan.",
+        )
+    org = db.query(Organization).filter(Organization.id == user.organization_id).first()
+    try:
+        payment, url = billing.create_checkout_bill(
+            db,
+            organization_id=user.organization_id,
+            package=pkg,
+            buyer_email=user.email,
+            buyer_name=org.name if org else user.email,
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=f"Could not start checkout: {exc}")
+    return CheckoutOut(payment_url=url, bill_id=payment.billplz_bill_id)
+
+
+@router.post("/webhook/billplz")
+async def billplz_webhook(request: Request, db: Session = Depends(get_db)):
+    """Billplz server-to-server payment callback (JWT-less, X-Signature verified).
+
+    Billplz posts `application/x-www-form-urlencoded`; we parse the raw body so no
+    multipart dependency is needed. Always answers fast: 200 once verified, 400 on
+    a bad/absent signature.
+    """
+    raw = (await request.body()).decode("utf-8", "replace")
+    ctype = request.headers.get("content-type", "")
+    if "application/json" in ctype:
+        try:
+            data = {str(k): str(v) for k, v in (await request.json()).items()}
+        except Exception:
+            data = {}
+    else:
+        data = dict(parse_qsl(raw, keep_blank_values=True))
+
+    try:
+        result = billing.process_billplz_webhook(db, data)
+    except ValueError as exc:
+        logger.warning("rejected Billplz webhook: %s", exc)
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"status": result}

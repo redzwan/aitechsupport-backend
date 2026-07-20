@@ -42,6 +42,19 @@ class SubscribeRequest(BaseModel):
     package_slug: str
 
 
+class CheckoutOut(BaseModel):
+    """Result of POST /billing/checkout.
+
+    - Paid plan: `payment_url` is the Billplz page to redirect the browser to;
+      the plan activates via webhook after payment.
+    - Free plan / downgrade: `subscription` is the already-applied plan and
+      `payment_url` is null (no payment needed).
+    """
+    payment_url: str | None = None
+    bill_id: str | None = None
+    subscription: SubscriptionOut | None = None
+
+
 class ClientRow(BaseModel):
     organization_id: int
     organization_name: str
