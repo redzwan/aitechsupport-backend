@@ -1,14 +1,18 @@
 from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
 from fastapi.security import OAuth2PasswordRequestForm
+from sqlalchemy import func, or_
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
 from app.core.security import verify_password, get_password_hash, create_access_token
 from app.core import email as email_service
+from app.core import invites as invites_core
 from app.core.settings import settings
 from app.api.deps import get_current_user
 from app.models.organization import Organization
 from app.models.user import User
+from app.models.org_invite import OrgInvite
 from app.schemas.auth import (
     RegisterRequest,
     Token,
@@ -16,6 +20,7 @@ from app.schemas.auth import (
     UpdateProfileRequest,
     ChangePasswordRequest,
 )
+from app.schemas.invite import InvitePreview, JoinRequest
 
 router = APIRouter()
 
@@ -53,6 +58,78 @@ def register(payload: RegisterRequest, background: BackgroundTasks, db: Session 
     )
 
     token = create_access_token({"sub": str(user.id), "org": org.id})
+    return Token(access_token=token)
+
+
+@router.get("/invite/{code}", response_model=InvitePreview)
+def preview_invite(code: str, db: Session = Depends(get_db)) -> InvitePreview:
+    """Public: show which org an invite code joins + whether it's still valid."""
+    inv = db.query(OrgInvite).filter(OrgInvite.code == code).first()
+    if inv is None:
+        raise HTTPException(status_code=404, detail="Invite not found")
+    org = db.query(Organization).filter(Organization.id == inv.organization_id).first()
+    return InvitePreview(
+        organization_name=org.name if org else "",
+        role=inv.role,
+        valid=invites_core.is_valid(inv),
+    )
+
+
+@router.post("/join", response_model=Token, status_code=201)
+def join(payload: JoinRequest, background: BackgroundTasks, db: Session = Depends(get_db)) -> Token:
+    """Public: create an account in the invite's org + role, redeeming the code.
+
+    The org and role come from the invite row only — never the request body."""
+    inv = db.query(OrgInvite).filter(OrgInvite.code == payload.code).first()
+    if inv is None or not invites_core.is_valid(inv):
+        raise HTTPException(status_code=400, detail="This invite is invalid or has expired.")
+
+    email = payload.email.strip().lower()
+    if db.query(User).filter(func.lower(User.email) == email).first():
+        raise HTTPException(status_code=409, detail="Email already registered")
+
+    # Atomically consume one use (closes the single-use race); undone if the commit
+    # below fails, so the whole join is all-or-nothing.
+    if inv.max_uses is not None:
+        consumed = (
+            db.query(OrgInvite)
+            .filter(
+                OrgInvite.id == inv.id,
+                or_(OrgInvite.max_uses.is_(None), OrgInvite.uses < OrgInvite.max_uses),
+            )
+            .update({OrgInvite.uses: OrgInvite.uses + 1}, synchronize_session=False)
+        )
+        if consumed == 0:
+            db.rollback()
+            raise HTTPException(status_code=400, detail="This invite has already been used.")
+    else:
+        db.query(OrgInvite).filter(OrgInvite.id == inv.id).update(
+            {OrgInvite.uses: OrgInvite.uses + 1}, synchronize_session=False
+        )
+
+    user = User(
+        organization_id=inv.organization_id,
+        email=email,
+        hashed_password=get_password_hash(payload.password),
+        full_name=(payload.full_name or "").strip() or None,
+        role=inv.role if inv.role in ("agent", "admin") else "agent",
+        is_active=True,
+    )
+    db.add(user)
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="Email already registered")
+    db.refresh(user)
+
+    background.add_task(
+        email_service.send_template_bg,
+        user.email,
+        "welcome",
+        {"name": user.full_name or user.email, "email": user.email, "dashboard_url": f"{settings.FRONTEND_URL}/dashboard"},
+    )
+    token = create_access_token({"sub": str(user.id), "org": inv.organization_id})
     return Token(access_token=token)
 
 
