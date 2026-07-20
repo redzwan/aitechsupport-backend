@@ -66,6 +66,32 @@ class ClientRow(BaseModel):
     created_at: str | None = None
 
 
+class PaymentRow(BaseModel):
+    id: int
+    organization_id: int
+    organization_name: str | None = None
+    plan_slug: str
+    amount_cents: int
+    status: str
+    sandbox: bool
+    billplz_bill_id: str | None = None
+    paid_at: str | None = None
+    created_at: str | None = None
+
+
+class PaymentsSummary(BaseModel):
+    total: int
+    paid: int
+    pending: int
+    failed: int
+    live_revenue_cents: int  # sum of paid, non-sandbox bills
+
+
+class PaymentsOut(BaseModel):
+    summary: PaymentsSummary
+    payments: list[PaymentRow]
+
+
 class BillplzSettingsOut(BaseModel):
     """Billplz gateway config for the admin panel. Secret keys are never returned
     in full — only whether they're set + a last-4 hint."""

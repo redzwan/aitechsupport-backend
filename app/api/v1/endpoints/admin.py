@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
@@ -10,6 +10,7 @@ from app.models.organization import Organization
 from app.models.bot import Bot
 from app.models.subscription import Subscription
 from app.models.package import Package
+from app.models.payment import Payment
 from app.models.email_template import EmailTemplate
 from app.models.page import Page
 from app.schemas.content import HomepageUpdate, PageAdminOut, PageCreate, PageUpdate
@@ -22,6 +23,9 @@ from app.schemas.billing import (
     SubscribeRequest,
     BillplzSettingsOut,
     BillplzSettingsUpdate,
+    PaymentRow,
+    PaymentsSummary,
+    PaymentsOut,
 )
 from app.schemas.email import (
     SMTPSettingsOut,
@@ -369,6 +373,65 @@ def test_billplz(db: Session = Depends(get_db), admin: User = Depends(get_platfo
         billing.test_billplz(db)
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=f"Billplz check failed: {exc}")
+
+
+# ===== Payments (Billplz bills + status) =====
+
+@router.get("/payments", response_model=PaymentsOut)
+def list_payments(
+    status: str | None = Query(default=None, description="Filter by status: pending | paid | failed"),
+    limit: int = Query(default=200, ge=1, le=500),
+    db: Session = Depends(get_db),
+    admin: User = Depends(get_platform_admin),
+):
+    """Billplz bills across all clients (newest first) + a revenue/status summary.
+
+    The summary is computed over ALL payments; the returned rows are capped by
+    `limit` (and optionally filtered by `status`)."""
+    # Summary over the whole table (not just the returned page).
+    by_status = dict(
+        db.query(Payment.status, func.count(Payment.id)).group_by(Payment.status).all()
+    )
+    live_revenue = (
+        db.query(func.coalesce(func.sum(Payment.amount_cents), 0))
+        .filter(Payment.status == "paid", Payment.sandbox.is_(False))
+        .scalar()
+    ) or 0
+    summary = PaymentsSummary(
+        total=sum(by_status.values()),
+        paid=by_status.get("paid", 0),
+        pending=by_status.get("pending", 0),
+        failed=by_status.get("failed", 0),
+        live_revenue_cents=int(live_revenue),
+    )
+
+    q = db.query(Payment)
+    if status:
+        q = q.filter(Payment.status == status)
+    rows = q.order_by(Payment.id.desc()).limit(limit).all()
+    org_names = {
+        o.id: o.name
+        for o in db.query(Organization).filter(
+            Organization.id.in_({r.organization_id for r in rows})
+        ).all()
+    } if rows else {}
+
+    payments = [
+        PaymentRow(
+            id=r.id,
+            organization_id=r.organization_id,
+            organization_name=org_names.get(r.organization_id),
+            plan_slug=r.plan_slug,
+            amount_cents=r.amount_cents,
+            status=r.status,
+            sandbox=r.sandbox,
+            billplz_bill_id=r.billplz_bill_id,
+            paid_at=r.paid_at.isoformat() if r.paid_at else None,
+            created_at=r.created_at.isoformat() if r.created_at else None,
+        )
+        for r in rows
+    ]
+    return PaymentsOut(summary=summary, payments=payments)
 
 
 # ===== Homepage content (structured CMS) =====
