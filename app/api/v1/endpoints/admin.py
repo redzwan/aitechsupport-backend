@@ -1,3 +1,6 @@
+import re
+from urllib.parse import urlparse
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -15,6 +18,7 @@ from app.models.email_template import EmailTemplate
 from app.models.page import Page
 from app.schemas.content import HomepageUpdate, PageAdminOut, PageCreate, PageUpdate
 from app.schemas.setting import SettingsUpdate, SettingsOut
+from app.schemas.site_widget import SiteWidgetOut, SiteWidgetUpdate
 from app.schemas.storage import StorageSettingsOut, StorageSettingsUpdate
 from app.schemas.billing import (
     PackageOut,
@@ -82,6 +86,69 @@ def update_settings(
     if updates:
         config_store.set_many(db, updates)
     return get_settings(db=db, admin=admin)
+
+
+# ===== Support widget on our own site (aitechsupport.my) =====
+# Store one bot's embed key so the marketing site can load its own support
+# widget. We parse the pasted snippet and keep only the src + public key (never
+# raw HTML), so the site injects a clean, validated tag.
+
+
+def _site_widget_out() -> SiteWidgetOut:
+    key = config_store.get("SITE_WIDGET_PUBLIC_KEY")
+    src = config_store.get("SITE_WIDGET_SRC")
+    enabled = config_store.get("SITE_WIDGET_ENABLED") == "1"
+    snippet = (
+        f'<script src="{src}" data-public-key="{key}" defer></script>'
+        if (src and key)
+        else ""
+    )
+    return SiteWidgetOut(enabled=enabled, public_key=key, src=src, snippet=snippet)
+
+
+def _valid_widget_src(src: str) -> bool:
+    """Only https URLs on our own domain may be loaded on the site."""
+    try:
+        u = urlparse(src)
+    except ValueError:
+        return False
+    host = (u.hostname or "").lower()
+    return u.scheme == "https" and (
+        host == "aitechsupport.my" or host.endswith(".aitechsupport.my")
+    )
+
+
+@router.get("/site-widget", response_model=SiteWidgetOut)
+def get_site_widget(admin: User = Depends(get_platform_admin)) -> SiteWidgetOut:
+    return _site_widget_out()
+
+
+@router.put("/site-widget", response_model=SiteWidgetOut)
+def update_site_widget(
+    payload: SiteWidgetUpdate,
+    db: Session = Depends(get_db),
+    admin: User = Depends(get_platform_admin),
+) -> SiteWidgetOut:
+    updates: dict[str, str] = {"SITE_WIDGET_ENABLED": "1" if payload.enabled else "0"}
+    snippet = (payload.snippet or "").strip()
+    if snippet:
+        src_m = re.search(r"""src\s*=\s*["']([^"']+)["']""", snippet)
+        key_m = re.search(r"""data-public-key\s*=\s*["']([^"']+)["']""", snippet)
+        if not src_m or not key_m:
+            raise HTTPException(
+                status_code=400,
+                detail="Couldn't read the snippet — paste the full <script …> embed code from a bot's Website widget page.",
+            )
+        src = src_m.group(1).strip()
+        if not _valid_widget_src(src):
+            raise HTTPException(
+                status_code=400,
+                detail="The snippet's script src must be an https URL on aitechsupport.my.",
+            )
+        updates["SITE_WIDGET_SRC"] = src
+        updates["SITE_WIDGET_PUBLIC_KEY"] = key_m.group(1).strip()
+    config_store.set_many(db, updates)
+    return _site_widget_out()
 
 
 # ===== Packages (the products the operator sells) =====

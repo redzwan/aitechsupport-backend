@@ -16,7 +16,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db, SessionLocal
-from app.core import rag, embeddings, llm, billing, widget, limits, email
+from app.core import rag, embeddings, llm, billing, widget, limits, email, config_store
 from app.core.events import bus, conv_topic, org_topic
 from app.core.settings import settings
 from app.models.user import User
@@ -29,9 +29,20 @@ from app.schemas.widget import (
     HandoffResponse,
     VisitorMessagesOut,
 )
+from app.schemas.site_widget import SiteWidgetPublic
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+@router.get("/site-widget", response_model=SiteWidgetPublic)
+def site_widget_public() -> SiteWidgetPublic:
+    """What (if anything) support widget the aitechsupport.my site should load.
+    Unauthenticated + non-secret: the public key is embedded on the page anyway."""
+    key = config_store.get("SITE_WIDGET_PUBLIC_KEY")
+    src = config_store.get("SITE_WIDGET_SRC")
+    on = config_store.get("SITE_WIDGET_ENABLED") == "1" and bool(key and src)
+    return SiteWidgetPublic(enabled=on, src=src if on else "", public_key=key if on else "")
 
 
 def _sse(obj: dict) -> str:
