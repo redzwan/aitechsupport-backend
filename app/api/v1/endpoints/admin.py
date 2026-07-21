@@ -1,13 +1,14 @@
+import json
 import re
 from urllib.parse import urlparse
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Form, HTTPException, Query
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
 from app.api.deps import get_platform_admin
-from app.core import config_store, models_catalog, billing, email as email_service, storage, cms
+from app.core import config_store, models_catalog, billing, email as email_service, storage, cms, gsc_service
 from app.models.user import User
 from app.models.organization import Organization
 from app.models.bot import Bot
@@ -149,6 +150,80 @@ def update_site_widget(
         updates["SITE_WIDGET_PUBLIC_KEY"] = key_m.group(1).strip()
     config_store.set_many(db, updates)
     return _site_widget_out()
+
+
+# ===== Google Search Console (admin SEO panel) =====
+# Connect a GSC service-account credential to pull live search metrics.
+
+
+@router.post("/seo/gsc-config")
+def save_gsc_config(
+    site_url: str = Form(...),
+    service_account_json: str = Form(...),
+    admin: User = Depends(get_platform_admin),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Store the GSC service-account credential + property URL."""
+    try:
+        info = json.loads(service_account_json)
+        if not info.get("client_email") or not info.get("private_key"):
+            raise ValueError("missing client_email/private_key")
+    except Exception:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid service account JSON (need a downloaded service-account key).",
+        )
+    config_store.set_many(
+        db,
+        {
+            "GSC_SITE_URL": site_url.strip(),
+            "GSC_SERVICE_ACCOUNT_JSON": service_account_json,
+        },
+    )
+    return {
+        "message": "Search Console connected",
+        "client_email": info.get("client_email"),
+        "site_url": site_url.strip(),
+    }
+
+
+@router.get("/seo/gsc-status")
+def gsc_status(admin: User = Depends(get_platform_admin)) -> dict:
+    """Whether GSC is configured (never returns the private key)."""
+    sa = config_store.get("GSC_SERVICE_ACCOUNT_JSON")
+    if not sa:
+        return {"configured": False}
+    client_email = None
+    try:
+        client_email = json.loads(sa).get("client_email")
+    except Exception:
+        pass
+    return {
+        "configured": True,
+        "site_url": config_store.get("GSC_SITE_URL"),
+        "client_email": client_email,
+    }
+
+
+@router.get("/seo/metrics")
+def gsc_metrics(admin: User = Depends(get_platform_admin)) -> dict:
+    """Live Search Console metrics (clicks/impressions/CTR/position + top queries/pages)."""
+    sa = config_store.get("GSC_SERVICE_ACCOUNT_JSON")
+    site = config_store.get("GSC_SITE_URL")
+    if not sa or not site:
+        raise HTTPException(status_code=400, detail="Search Console is not configured.")
+    try:
+        return gsc_service.fetch_metrics(site, sa)
+    except Exception as e:
+        detail = str(e)
+        try:
+            import requests
+
+            if isinstance(e, requests.HTTPError) and e.response is not None:
+                detail = f"HTTP {e.response.status_code}: {e.response.text[:300]}"
+        except Exception:
+            pass
+        raise HTTPException(status_code=502, detail=f"Search Console API error: {detail}")
 
 
 # ===== Packages (the products the operator sells) =====

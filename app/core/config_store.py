@@ -42,6 +42,9 @@ MANAGED_KEYS = {
     "BILLPLZ_COLLECTION_ID": "BILLPLZ_COLLECTION_ID",
     "BILLPLZ_SANDBOX": "BILLPLZ_SANDBOX",       # "true" | "false" (test vs live)
     "BILLING_ENABLED": "BILLING_ENABLED",       # "true" | "false" (payment kill-switch)
+    # Google Search Console (admin SEO panel)
+    "GSC_SITE_URL": "GSC_SITE_URL",                       # e.g. sc-domain:aitechsupport.my
+    "GSC_SERVICE_ACCOUNT_JSON": "GSC_SERVICE_ACCOUNT_JSON",  # service-account key JSON
 }
 
 # Keys whose value must never be returned to the client in full.
@@ -52,6 +55,7 @@ SECRET_KEYS = {
     "STORAGE_SECRET_KEY",
     "BILLPLZ_API_KEY",
     "BILLPLZ_X_SIGNATURE_KEY",
+    "GSC_SERVICE_ACCOUNT_JSON",
 }
 
 

@@ -29,3 +29,6 @@ bleach
 minio
 # Website-widget rate limit + global GPU concurrency cap (cross-worker)
 redis
+
+# Google Search Console (admin SEO panel) — service-account auth
+google-auth
