@@ -113,9 +113,24 @@ class ConversationMessageOut(BaseModel):
     sender_user_id: int | None = None
     sender_name: str | None = None  # agent display name shown to the visitor
     created_at: datetime | None = None
+    # Short-lived presigned inline URL for an attached image. Regenerated on each
+    # read (clients poll), and None once the 90-day lifecycle rule has expired
+    # the object — render a placeholder rather than a broken image.
+    image_url: str | None = None
+    image_mime: str | None = None
 
     class Config:
         from_attributes = True
+
+
+class ImageUploadOut(BaseModel):
+    """Result of a chat image upload; `image_key` is attached to the next message."""
+
+    image_key: str
+    url: str
+    mime: str
+    size: int
+    session_id: str
 
 
 class QueueRow(ConversationOut):

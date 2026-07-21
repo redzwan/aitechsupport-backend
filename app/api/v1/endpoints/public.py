@@ -10,13 +10,13 @@ import html
 import json
 import logging
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db, SessionLocal
-from app.core import rag, embeddings, llm, billing, widget, limits, email, config_store
+from app.core import rag, embeddings, llm, billing, widget, limits, email, config_store, storage, attachments
 from app.core.events import bus, conv_topic, org_topic
 from app.core.settings import settings
 from app.models.user import User
@@ -28,6 +28,8 @@ from app.schemas.widget import (
     HandoffRequest,
     HandoffResponse,
     VisitorMessagesOut,
+    ConversationMessageOut,
+    ImageUploadOut,
 )
 from app.schemas.site_widget import SiteWidgetPublic
 
@@ -103,6 +105,81 @@ def _ensure_not_blocked(db: Session, channel, session_id: str, ip: str) -> None:
     email = conv.contact_email if conv else None
     if widget.is_blocked(db, channel, session_id, ip=ip, email=email):
         raise HTTPException(status_code=403, detail="chat_unavailable")
+
+
+def _visitor_message_out(db: Session, m: Message) -> ConversationMessageOut:
+    """Serialize a message for the visitor, resolving any image to a short URL."""
+    out = ConversationMessageOut.model_validate(m)
+    out.image_url = attachments.view_url(db, m.image_key, m.image_mime)
+    out.image_mime = m.image_mime
+    return out
+
+
+_UPLOAD_CHUNK = 64 * 1024
+
+
+async def _read_capped_upload(file: UploadFile, limit: int) -> bytes:
+    """Read an upload in bounded chunks, rejecting once it exceeds `limit`.
+
+    Chunked so a huge body is refused mid-stream instead of being buffered whole.
+    """
+    buf = bytearray()
+    while True:
+        part = await file.read(_UPLOAD_CHUNK)
+        if not part:
+            break
+        buf.extend(part)
+        if len(buf) > limit:
+            raise HTTPException(status_code=413, detail="Image is too large (max 5MB).")
+    return bytes(buf)
+
+
+@router.post("/widget/{public_key}/upload", response_model=ImageUploadOut)
+async def widget_upload_image(
+    public_key: str,
+    request: Request,
+    file: UploadFile = File(...),
+    session_id: str = Form(""),
+    db: Session = Depends(get_db),
+) -> ImageUploadOut:
+    """Visitor uploads an image to attach to their next message.
+
+    Sits under /widget/{key}/ so the per-bot CORS middleware allows it from the
+    tenant's site. Runs the same ingress gates as chat (resolve, rate limit,
+    block list) so it can't be used to bypass them or as free storage.
+    """
+    channel, bot = _resolve_and_ratelimit(public_key, request, db)
+    sid = widget.clean_session_id(session_id)
+    ip = _client_ip(request)
+    _ensure_not_blocked(db, channel, sid, ip)
+
+    if not storage.is_configured(db):
+        raise HTTPException(status_code=503, detail="Image upload is unavailable.")
+
+    data = await _read_capped_upload(file, settings.MAX_UPLOAD_BYTES)
+    if not data:
+        raise HTTPException(status_code=400, detail="Empty file.")
+    mime = attachments.sniff_image_mime(data)
+    if mime is None:
+        raise HTTPException(
+            status_code=415,
+            detail="Only JPEG, PNG, WebP or GIF images are supported.",
+        )
+
+    key = attachments.build_key(channel.organization_id, bot.id, sid, mime)
+    try:
+        storage.put_bytes(db, data, key, mime)
+    except Exception:
+        logger.exception("widget image upload failed for bot %s", bot.id)
+        raise HTTPException(status_code=502, detail="Could not store the image.")
+
+    return ImageUploadOut(
+        image_key=key,
+        url=attachments.view_url(db, key, mime) or "",
+        mime=mime,
+        size=len(data),
+        session_id=sid,
+    )
 
 
 @router.get("/widget/{public_key}/config", response_model=WidgetPublicConfig)
@@ -347,7 +424,10 @@ def widget_conversation_messages(
         .limit(100)
         .all()
     )
-    return VisitorMessagesOut(status=conv.status, messages=msgs)
+    return VisitorMessagesOut(
+        status=conv.status,
+        messages=[_visitor_message_out(db, m) for m in msgs],
+    )
 
 
 def _resolve_conv_for_stream(public_key: str, session_id: str, ip: str):
@@ -381,7 +461,16 @@ def _agent_messages_after(conv_id: int, after: int) -> list[dict]:
             .limit(100)
             .all()
         )
-        return [{"id": m.id, "role": "agent", "content": m.content, "sender_name": m.sender_name} for m in rows]
+        return [
+            {
+                "id": m.id,
+                "role": "agent",
+                "content": m.content,
+                "sender_name": m.sender_name,
+                "image_url": attachments.view_url(db, m.image_key, m.image_mime),
+            }
+            for m in rows
+        ]
     finally:
         db.close()
 

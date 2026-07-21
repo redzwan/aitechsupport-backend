@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 
 from app.db.session import get_db
 from app.api.deps import get_current_user, get_agent_user
-from app.core import rag, embeddings, llm, models_catalog, billing, widget, analytics
+from app.core import rag, embeddings, llm, models_catalog, billing, widget, analytics, attachments
 from app.core.events import bus, conv_topic, org_topic, user_topic
 from app.core.settings import settings
 from app.models.user import User
@@ -67,6 +67,14 @@ def create_bot(payload: BotCreate, db: Session = Depends(get_db), user: User = D
     db.commit()
     db.refresh(bot)
     return bot
+
+
+def _message_out(db: Session, m: Message) -> ConversationMessageOut:
+    """Serialize a message, resolving an attached image to a short-lived URL."""
+    out = ConversationMessageOut.model_validate(m)
+    out.image_url = attachments.view_url(db, m.image_key, m.image_mime)
+    out.image_mime = m.image_mime
+    return out
 
 
 def _get_owned_bot(bot_id: int, db: Session, user: User) -> Bot:
@@ -322,12 +330,13 @@ def conversation_messages(
 ):
     bot = _get_owned_bot(bot_id, db, user)
     conv = _owned_conversation(bot, conv_id, db)
-    return (
+    msgs = (
         db.query(Message)
         .filter(Message.conversation_id == conv.id)
         .order_by(Message.created_at.asc(), Message.id.asc())
         .all()
     )
+    return [_message_out(db, m) for m in msgs]
 
 
 @router.patch("/{bot_id}/conversations/{conv_id}", response_model=ConversationOut)

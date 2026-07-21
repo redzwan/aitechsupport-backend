@@ -24,6 +24,10 @@ from app.core.settings import settings
 
 logger = logging.getLogger(__name__)
 
+# Chat image uploads live under this prefix so the 90-day expiry lifecycle rule
+# can target them without ever touching knowledge-base objects (kb/...).
+CHAT_IMAGE_PREFIX = "chat/"
+
 
 def storage_config(db: Session | None = None) -> dict:
     """Resolve storage config (DB settings first, env fallback via config_store)."""
@@ -149,6 +153,86 @@ def presigned_url(
         expires=timedelta(seconds=seconds),
         response_headers={"response-content-disposition": disposition},
     )
+
+
+# Chat images must render in an <img>, so they get `inline` instead of the
+# `attachment` above. Kept to a strict raster allowlist: SVG is intentionally
+# excluded because inline SVG on the storage origin can execute script.
+INLINE_IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp", "image/gif"}
+
+
+def inline_image_url(
+    db: Session,
+    object_name: str,
+    content_type: str | None = None,
+    expiry: int | None = None,
+) -> str:
+    """Short-lived presigned GET URL that renders inline in an <img> tag.
+
+    Only for raster images we control the type of (see INLINE_IMAGE_TYPES); any
+    other content type falls back to the download-forcing presigned_url.
+    """
+    ctype = (content_type or "").lower()
+    if ctype not in INLINE_IMAGE_TYPES:
+        return presigned_url(db, object_name, expiry=expiry)
+    cfg = storage_config(db)
+    if not is_configured(db):
+        raise RuntimeError("Object storage is not configured")
+    seconds = expiry or settings.STORAGE_URL_EXPIRY
+    return _client(cfg).presigned_get_object(
+        cfg["bucket"],
+        object_name,
+        expires=timedelta(seconds=seconds),
+        response_headers={
+            "response-content-disposition": "inline",
+            "response-content-type": ctype,
+        },
+    )
+
+
+def get_bytes(db: Session, object_name: str) -> bytes:
+    """Read an object back (used to inline an image for the vision model)."""
+    cfg = storage_config(db)
+    if not is_configured(db):
+        raise RuntimeError("Object storage is not configured")
+    resp = None
+    try:
+        resp = _client(cfg).get_object(cfg["bucket"], object_name)
+        return resp.read()
+    finally:
+        if resp is not None:
+            resp.close()
+            resp.release_conn()
+
+
+def apply_chat_image_lifecycle(db: Session, days: int = 90) -> None:
+    """Expire chat image uploads after `days` via a bucket lifecycle rule.
+
+    Cheaper and more reliable than a cron: the storage layer enforces it. Scoped
+    to the CHAT_IMAGE_PREFIX so knowledge-base uploads are never touched.
+    """
+    from minio.lifecycleconfig import LifecycleConfig, Rule, Expiration
+    from minio.commonconfig import ENABLED, Filter
+
+    cfg = storage_config(db)
+    if not is_configured(db):
+        raise RuntimeError("Object storage is not configured")
+    client = _client(cfg)
+    rule = Rule(
+        ENABLED,
+        rule_id="ats-chat-images-expire",
+        rule_filter=Filter(prefix=CHAT_IMAGE_PREFIX),
+        expiration=Expiration(days=days),
+    )
+    # Preserve any unrelated rules the operator already set on the bucket.
+    keep: list = []
+    try:
+        existing = client.get_bucket_lifecycle(cfg["bucket"])
+        if existing and existing.rules:
+            keep = [r for r in existing.rules if r.rule_id != "ats-chat-images-expire"]
+    except Exception:  # no lifecycle configured yet
+        keep = []
+    client.set_bucket_lifecycle(cfg["bucket"], LifecycleConfig(keep + [rule]))
 
 
 def remove(db: Session, object_name: str) -> bool:

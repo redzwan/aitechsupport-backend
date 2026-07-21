@@ -63,4 +63,12 @@ class Message(Base):
     # send time so it survives later profile edits.
     sender_name = Column(String, nullable=True)
 
+    # Optional image attachment held in object storage. A captionless image stores
+    # content="" (keeps the NOT NULL constraint and every str-assuming consumer
+    # happy). Objects expire on a 90-day bucket lifecycle rule, so an old key can
+    # 404 — render a placeholder, don't error.
+    image_key = Column(String, nullable=True)
+    image_mime = Column(String, nullable=True)
+    image_size = Column(Integer, nullable=True)
+
     created_at = Column(DateTime, default=datetime.utcnow)
