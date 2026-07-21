@@ -11,6 +11,16 @@ class BotCreate(BaseModel):
     chat_model: str | None = None
 
 
+class BotUpdate(BaseModel):
+    """Partial update — only the fields provided are changed."""
+
+    name: str | None = None
+    system_prompt: str | None = None
+    fallback_message: str | None = None
+    chat_model: str | None = None
+    is_active: bool | None = None
+
+
 class BotOut(BaseModel):
     id: int
     organization_id: int

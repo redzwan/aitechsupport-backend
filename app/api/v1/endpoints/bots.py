@@ -19,7 +19,7 @@ from app.models.bot import Bot
 from app.models.channel import Channel
 from app.models.conversation import Conversation, Message
 from app.models.blocked_visitor import BlockedVisitor
-from app.schemas.bot import BotCreate, BotOut, ChatRequest, ChatResponse
+from app.schemas.bot import BotCreate, BotOut, BotUpdate, ChatRequest, ChatResponse
 from app.schemas.setting import ModelOption
 from app.schemas.widget import (
     WidgetConfigOut,
@@ -77,6 +77,28 @@ def _get_owned_bot(bot_id: int, db: Session, user: User) -> Bot:
     )
     if not bot:
         raise HTTPException(status_code=404, detail="Bot not found")
+    return bot
+
+
+@router.patch("/{bot_id}", response_model=BotOut)
+def update_bot(
+    bot_id: int,
+    payload: BotUpdate,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> Bot:
+    """Rename a bot / tweak its settings. Only the supplied fields change."""
+    bot = _get_owned_bot(bot_id, db, user)
+    changes = payload.model_dump(exclude_unset=True)
+    if "name" in changes:
+        name = (changes["name"] or "").strip()
+        if not name:
+            raise HTTPException(status_code=422, detail="Bot name cannot be empty.")
+        changes["name"] = name
+    for field, value in changes.items():
+        setattr(bot, field, value)
+    db.commit()
+    db.refresh(bot)
     return bot
 
 
