@@ -10,6 +10,7 @@ image by guessing a key.
 from __future__ import annotations
 
 import hashlib
+import time
 import uuid
 
 from sqlalchemy.orm import Session
@@ -85,15 +86,46 @@ def owns_agent_key(key: str | None, org_id: int, bot_id: int, conversation_id: i
     return key.startswith(expected)
 
 
-def view_url(db: Session, key: str | None, mime: str | None) -> str | None:
-    """Short-lived inline URL, or None if unset / expired / storage unavailable.
+# Presigning is deterministic per call only in its inputs — the signature embeds
+# the current time, so a fresh URL is produced every time. Clients poll the
+# thread every ~4s, so returning a new URL each poll would make them re-download
+# every image continuously. Hand back the SAME url for REUSE_SECONDS instead, so
+# the browser / Image.network cache actually works.
+_URL_SIGN_SECONDS = 900   # how long the presigned URL stays valid
+_URL_REUSE_SECONDS = 600  # how long we keep handing out the same one
+_URL_CACHE_MAX = 2000
 
-    Never raises: a missing image must degrade to a placeholder, not break a
-    whole conversation from loading.
+_url_cache: dict[str, tuple[str, float]] = {}
+
+
+def _prune_url_cache(now: float) -> None:
+    for k, (_, exp) in list(_url_cache.items()):
+        if exp <= now:
+            del _url_cache[k]
+    if len(_url_cache) > _URL_CACHE_MAX:  # pathological growth guard
+        for k in list(_url_cache)[: len(_url_cache) - _URL_CACHE_MAX]:
+            del _url_cache[k]
+
+
+def view_url(db: Session, key: str | None, mime: str | None) -> str | None:
+    """Inline URL for an image, stable for ~10 minutes so clients can cache it.
+
+    Returns None if unset / expired / storage unavailable — never raises, since a
+    missing image must degrade to a placeholder rather than break a whole
+    conversation from loading.
     """
     if not key:
         return None
+    now = time.time()
+    cached = _url_cache.get(key)
+    if cached is not None and cached[1] > now:
+        return cached[0]
     try:
-        return storage.inline_image_url(db, key, mime)
+        url = storage.inline_image_url(db, key, mime, expiry=_URL_SIGN_SECONDS)
     except Exception:
         return None
+    # Reused for less than it's signed for, so a URL handed out at the last
+    # moment still has several minutes of validity left.
+    _url_cache[key] = (url, now + _URL_REUSE_SECONDS)
+    _prune_url_cache(now)
+    return url
