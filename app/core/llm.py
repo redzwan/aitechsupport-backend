@@ -54,35 +54,90 @@ def _client():
     )
 
 
-def _messages(system_prompt: str, context: str, question: str) -> list[dict]:
+def _build_system_vision(system_prompt: str) -> str:
+    """Vision turns must NOT be restricted to the KB context — the picture itself is
+    evidence, and the KB usually has nothing about it. Describe, then help."""
+    return (
+        (system_prompt or "You are a helpful customer-support assistant.")
+        + "\n\nThe customer has attached an image. Describe what you can see that is "
+        "relevant to their problem, then help them using the CONTEXT below where it "
+        "applies. If you cannot tell from the image, say so plainly and offer to "
+        "connect a human. Be concise."
+    )
+
+
+def _messages(
+    system_prompt: str,
+    context: str,
+    question: str,
+    image_data_url: str | None = None,
+) -> list[dict]:
+    """OpenAI-format messages. With an image the user turn becomes a parts array."""
+    text = f"CONTEXT:\n{context}\n\nQUESTION: {question}"
+    if not image_data_url:
+        return [
+            {"role": "system", "content": _build_system(system_prompt)},
+            {"role": "user", "content": text},
+        ]
     return [
-        {"role": "system", "content": _build_system(system_prompt)},
-        {"role": "user", "content": f"CONTEXT:\n{context}\n\nQUESTION: {question}"},
+        {"role": "system", "content": _build_system_vision(system_prompt)},
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": text},
+                {"type": "image_url", "image_url": {"url": image_data_url}},
+            ],
+        },
     ]
 
 
-def _estimate_tokens(system_prompt: str, context: str, question: str, text: str) -> int:
+# A rough floor for an image's prompt cost, used only when the provider reports no
+# usage at all. Without it the chars/4 estimate would bill a picture as ~nothing.
+IMAGE_TOKEN_ESTIMATE = 800
+
+
+def _estimate_tokens(
+    system_prompt: str,
+    context: str,
+    question: str,
+    text: str,
+    has_image: bool = False,
+) -> int:
     """Fallback (~4 chars/token) when the provider reports no usage — keeps metering moving."""
     approx = len(_build_system(system_prompt)) + len(context) + len(question) + len(text)
-    return max(1, approx // 4)
+    return max(1, approx // 4) + (IMAGE_TOKEN_ESTIMATE if has_image else 0)
 
 
-def answer(system_prompt: str, context: str, question: str, model: str) -> tuple[str, int]:
+def answer(
+    system_prompt: str,
+    context: str,
+    question: str,
+    model: str,
+    image_data_url: str | None = None,
+) -> tuple[str, int]:
     """Generate a grounded answer. Returns (text, total_tokens) for usage metering."""
     resp = _client().chat.completions.create(
         model=model,
         max_tokens=1024,
-        messages=_messages(system_prompt, context, question),
+        messages=_messages(system_prompt, context, question, image_data_url),
     )
     text = (resp.choices[0].message.content or "").strip()
     # `or 0` guards against usage present but total_tokens == None (some providers).
     tokens = (getattr(resp.usage, "total_tokens", 0) or 0) if resp.usage else 0
     if not tokens:
-        tokens = _estimate_tokens(system_prompt, context, question, text)
+        tokens = _estimate_tokens(
+            system_prompt, context, question, text, has_image=bool(image_data_url)
+        )
     return text, tokens
 
 
-def answer_stream(system_prompt: str, context: str, question: str, model: str):
+def answer_stream(
+    system_prompt: str,
+    context: str,
+    question: str,
+    model: str,
+    image_data_url: str | None = None,
+):
     """Stream a grounded answer. Yields {'type':'delta','text':...} per token chunk,
     then a terminal {'type':'final','text':<full>,'tokens':<total>} for persistence/metering.
 
@@ -94,7 +149,7 @@ def answer_stream(system_prompt: str, context: str, question: str, model: str):
         max_tokens=1024,
         stream=True,
         stream_options={"include_usage": True},
-        messages=_messages(system_prompt, context, question),
+        messages=_messages(system_prompt, context, question, image_data_url),
     )
     parts: list[str] = []
     tokens = 0
@@ -110,5 +165,7 @@ def answer_stream(system_prompt: str, context: str, question: str, model: str):
             tokens = getattr(usage, "total_tokens", 0) or 0
     full = "".join(parts).strip()
     if not tokens:
-        tokens = _estimate_tokens(system_prompt, context, question, full)
+        tokens = _estimate_tokens(
+            system_prompt, context, question, full, has_image=bool(image_data_url)
+        )
     yield {"type": "final", "text": full, "tokens": tokens}

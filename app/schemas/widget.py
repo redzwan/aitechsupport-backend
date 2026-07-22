@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.core.settings import settings
 
@@ -8,16 +8,23 @@ from app.core.settings import settings
 # ===== Public (JWT-less) widget schemas =====
 
 class PublicChatRequest(BaseModel):
-    question: str = Field(min_length=1, max_length=settings.MAX_QUESTION_CHARS)
+    # An image may be sent with no caption, so `question` can be "" — but only
+    # when image_key is present (enforced below), otherwise a blank message would
+    # spend inference on nothing.
+    question: str = Field(default="", max_length=settings.MAX_QUESTION_CHARS)
     session_id: str | None = Field(default=None, max_length=64)
+    image_key: str | None = Field(default=None, max_length=300)
 
     @field_validator("question")
     @classmethod
-    def _not_blank(cls, v: str) -> str:
-        v = v.strip()
-        if not v:
-            raise ValueError("question must not be blank")
-        return v
+    def _strip(cls, v: str) -> str:
+        return (v or "").strip()
+
+    @model_validator(mode="after")
+    def _needs_content(self):
+        if not self.question and not self.image_key:
+            raise ValueError("send a question, an image, or both")
+        return self
 
 
 class PublicChatResponse(BaseModel):

@@ -107,6 +107,22 @@ def _ensure_not_blocked(db: Session, channel, session_id: str, ip: str) -> None:
         raise HTTPException(status_code=403, detail="chat_unavailable")
 
 
+def _claim_image(image_key: str | None, channel, bot, session_id: str) -> tuple[str | None, str | None]:
+    """Validate an image_key the visitor claims to have uploaded.
+
+    The key encodes org/bot/session, so a guessed or copied key from another
+    tenant (or another visitor) is rejected outright rather than being attached
+    to this conversation and fed to the model.
+    """
+    if not image_key:
+        return None, None
+    if not attachments.owns_key(image_key, channel.organization_id, bot.id, session_id):
+        raise HTTPException(status_code=403, detail="That image does not belong to this chat.")
+    ext = image_key.rsplit(".", 1)[-1].lower()
+    mime = {"jpg": "image/jpeg", "png": "image/png", "webp": "image/webp", "gif": "image/gif"}.get(ext)
+    return image_key, mime
+
+
 def _visitor_message_out(db: Session, m: Message) -> ConversationMessageOut:
     """Serialize a message for the visitor, resolving any image to a short URL."""
     out = ConversationMessageOut.model_validate(m)
@@ -240,11 +256,13 @@ def widget_chat(
     ip = _client_ip(request)
     src = _origin(request)
     _ensure_not_blocked(db, channel, session_id, ip)
+    image_key, image_mime = _claim_image(payload.image_key, channel, bot, session_id)
 
     # Bot-pause: a human owns this conversation -> store the visitor turn, no inference.
     paused = _bot_paused(db, channel, session_id)
     if paused:
-        conv = widget.record_user_message(db, channel, session_id, payload.question, ip=ip, source_url=src)
+        conv = widget.record_user_message(db, channel, session_id, payload.question, ip=ip, source_url=src,
+                                          image_key=image_key, image_mime=image_mime)
         bus.publish(org_topic(channel.organization_id), {"type": "ping", "conv_id": conv.id})
         return PublicChatResponse(answer="", session_id=session_id, status=paused, handoff=True)
 
@@ -254,7 +272,9 @@ def widget_chat(
     # monopolize the shared GPU.
     try:
         with limits.inference_slot(settings.WIDGET_MAX_CONCURRENCY):
-            answer, tokens = rag.answer_question(db, bot, payload.question)
+            answer, tokens = rag.answer_question(
+                db, bot, payload.question, image_key=image_key, image_mime=image_mime
+            )
     except limits.AtCapacity:
         raise HTTPException(status_code=429, detail="Busy right now — please retry shortly.",
                             headers={"Retry-After": "5"})
@@ -265,7 +285,8 @@ def widget_chat(
 
     if tokens:
         billing.record_usage(db, channel.organization_id, tokens)
-    conv = widget.record_turn(db, channel, session_id, payload.question, answer, tokens, ip=ip, source_url=src)
+    conv = widget.record_turn(db, channel, session_id, payload.question, answer, tokens, ip=ip, source_url=src,
+                              image_key=image_key, image_mime=image_mime)
     # tokens == 0 means the no-context fallback fired -> suggest a human.
     return PublicChatResponse(answer=answer, session_id=session_id, status=conv.status,
                               handoff=(tokens == 0))
@@ -288,12 +309,14 @@ def widget_chat_stream(
     ip = _client_ip(request)
     src = _origin(request)
     _ensure_not_blocked(db, channel, session_id, ip)
+    image_key, image_mime = _claim_image(payload.image_key, channel, _bot, session_id)
 
     # Bot-pause: a human owns this conversation -> store the visitor turn + a terminal
     # 'done' event (no inference), so the widget flips to polling for agent replies.
     paused = _bot_paused(db, channel, session_id)
     if paused:
-        pconv = widget.record_user_message(db, channel, session_id, question, ip=ip, source_url=src)
+        pconv = widget.record_user_message(db, channel, session_id, question, ip=ip, source_url=src,
+                                           image_key=image_key, image_mime=image_mime)
         bus.publish(org_topic(channel.organization_id), {"type": "ping", "conv_id": pconv.id})
 
         def paused_stream():
@@ -325,7 +348,8 @@ def widget_chat_stream(
             channel, bot = resolved
             org_id = channel.organization_id
             yield _sse({"type": "start", "session_id": session_id})
-            for ev in rag.answer_question_stream(sdb, bot, question):
+            for ev in rag.answer_question_stream(sdb, bot, question,
+                                                 image_key=image_key, image_mime=image_mime):
                 if ev["type"] == "delta":
                     yield _sse({"type": "delta", "text": ev["text"]})
                 elif ev["type"] == "final":
@@ -333,7 +357,8 @@ def widget_chat_stream(
                     tokens = ev["tokens"]
             if tokens:
                 billing.record_usage(sdb, org_id, tokens)
-            conv = widget.record_turn(sdb, channel, session_id, question, full_text, tokens, ip=ip, source_url=src)
+            conv = widget.record_turn(sdb, channel, session_id, question, full_text, tokens, ip=ip, source_url=src,
+                                      image_key=image_key, image_mime=image_mime)
             recorded = True
             yield _sse({"type": "done", "session_id": session_id, "status": conv.status,
                         "handoff": (tokens == 0)})
@@ -350,7 +375,8 @@ def widget_chat_stream(
                     billing.record_usage(sdb, org_id, tokens or max(1, len(full_text) // 4))
                     again = widget.resolve_widget(sdb, public_key)
                     if again is not None:
-                        widget.record_turn(sdb, again[0], session_id, question, full_text, tokens, ip=ip, source_url=src)
+                        widget.record_turn(sdb, again[0], session_id, question, full_text, tokens, ip=ip, source_url=src,
+                                           image_key=image_key, image_mime=image_mime)
                 except Exception:  # noqa: BLE001
                     pass
             sdb.close()

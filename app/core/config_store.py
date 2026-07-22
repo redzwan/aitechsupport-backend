@@ -20,6 +20,8 @@ MANAGED_KEYS = {
     "OLLAMA_BASE_URL": "OLLAMA_BASE_URL",
     "VOYAGE_API_KEY": "VOYAGE_API_KEY",
     "DEFAULT_CHAT_MODEL": "DEFAULT_CHAT_MODEL",
+    # Forced for any turn carrying an image (see models_catalog.vision_model).
+    "VISION_MODEL": "VISION_MODEL",
     # SMTP / email
     "SMTP_HOST": "SMTP_HOST",
     "SMTP_PORT": "SMTP_PORT",

@@ -34,3 +34,16 @@ def default_model() -> str:
 
 def resolve_for_bot(chat_model: str | None) -> str:
     return chat_model or default_model()
+
+
+# Only one model on the self-hosted server can read images, so a turn carrying an
+# image is forced onto it regardless of the bot's configured chat model — a text
+# model handed an image would silently ignore it. Platform-admin settable so it
+# can be swapped when a better VLM is installed; deliberately NOT per-bot, so
+# tenants can't pick a model that can't see.
+_HARDCODED_VISION_DEFAULT = "qwen2.5vl:3b"
+
+
+def vision_model() -> str:
+    """Model used whenever a message carries an image."""
+    return config_store.get("VISION_MODEL") or _HARDCODED_VISION_DEFAULT

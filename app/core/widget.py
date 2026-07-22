@@ -152,6 +152,7 @@ def is_blocked(db: Session, channel: Channel, session_id: str,
 def record_turn(
     db: Session, channel: Channel, session_id: str, question: str, answer: str, tokens: int,
     ip: str | None = None, source_url: str | None = None,
+    image_key: str | None = None, image_mime: str | None = None, image_size: int | None = None,
 ) -> Conversation:
     """Find-or-create the visitor's conversation and append the user + assistant messages."""
     conv = (
@@ -177,7 +178,8 @@ def record_turn(
         db.commit()
         db.refresh(conv)
     db.add(Message(organization_id=channel.organization_id, conversation_id=conv.id,
-                   role="user", content=question, tokens=0))
+                   role="user", content=question, tokens=0,
+                   image_key=image_key, image_mime=image_mime, image_size=image_size))
     db.add(Message(organization_id=channel.organization_id, conversation_id=conv.id,
                    role="assistant", content=answer, tokens=tokens))
     conv.last_message_at = now
@@ -237,7 +239,9 @@ def mark_handoff(db: Session, channel: Channel, session_id: str, name: str,
 
 
 def record_user_message(db: Session, channel: Channel, session_id: str, content: str,
-                        ip: str | None = None, source_url: str | None = None) -> Conversation:
+                        ip: str | None = None, source_url: str | None = None,
+                        image_key: str | None = None, image_mime: str | None = None,
+                        image_size: int | None = None) -> Conversation:
     """Store ONLY the visitor's message (no bot answer) — used when a human owns the
     conversation and the bot is paused. Find-or-creates the conversation."""
     now = datetime.utcnow()
@@ -254,7 +258,8 @@ def record_user_message(db: Session, channel: Channel, session_id: str, content:
         db.commit()
         db.refresh(conv)
     db.add(Message(organization_id=channel.organization_id, conversation_id=conv.id,
-                   role="user", content=content, tokens=0))
+                   role="user", content=content, tokens=0,
+                   image_key=image_key, image_mime=image_mime, image_size=image_size))
     conv.last_message_at = now
     if ip:
         conv.last_ip = ip
