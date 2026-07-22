@@ -34,7 +34,6 @@ from app.schemas.widget import (
     ConversationMessageOut,
     ImageUploadOut,
     WhatsAppLinkResponse,
-    WhatsAppOpenedRequest,
 )
 from app.schemas.site_widget import SiteWidgetPublic
 
@@ -473,8 +472,8 @@ def widget_whatsapp_link(
 @router.post("/widget/{public_key}/whatsapp/opened", response_model=HandoffResponse)
 def widget_whatsapp_opened(
     public_key: str,
-    payload: WhatsAppOpenedRequest,
     request: Request,
+    session_id: str | None = None,
     db: Session = Depends(get_db),
 ):
     """Beacon: the visitor actually tapped through to WhatsApp.
@@ -482,6 +481,12 @@ def widget_whatsapp_opened(
     Split from the link endpoint so merely *offering* WhatsApp doesn't fill the
     inbox with conversations nobody escalated. Flagging it here keeps the thread
     visible to agents instead of the visitor silently leaving the site.
+
+    The session comes in the QUERY STRING, not a JSON body, and that is load
+    bearing: the widget sends this with navigator.sendBeacon as the page is being
+    replaced by WhatsApp, and a JSON content type would force a CORS preflight
+    that sendBeacon cannot perform — cross-origin it silently sends nothing while
+    still returning true. A bodyless POST is a CORS-simple request.
     """
     resolved = widget.resolve_widget(db, public_key)
     if resolved is None:
@@ -493,7 +498,7 @@ def widget_whatsapp_opened(
         raise HTTPException(status_code=429, detail="Too many requests. Please slow down.",
                             headers={"Retry-After": "60"})
 
-    sid = widget.clean_session_id(payload.session_id)
+    sid = widget.clean_session_id(session_id)
     conv = widget.flag_needs_human(db, channel, sid)
     if conv is None:
         return HandoffResponse(ok=True, status="bot")

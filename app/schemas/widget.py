@@ -82,9 +82,6 @@ class WhatsAppLinkResponse(BaseModel):
     url: str | None = None
 
 
-class WhatsAppOpenedRequest(BaseModel):
-    session_id: str | None = Field(default=None, max_length=64)
-
 
 # ===== Dashboard (JWT, org-scoped) widget config =====
 
