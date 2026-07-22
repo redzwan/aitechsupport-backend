@@ -73,7 +73,10 @@ def _prepare(
     A turn carrying an image is also forced onto the vision model, since the
     bot's configured text model would silently ignore the picture.
     """
-    image_data_url = _image_data_url(db, image_key, image_mime) if image_key else None
+    # Vision may be disabled (no VISION_MODEL); then an image is ignored here and
+    # the caller has already routed the turn to a human.
+    use_vision = bool(image_key) and models_catalog.vision_enabled()
+    image_data_url = _image_data_url(db, image_key, image_mime) if use_vision else None
     # Nothing to embed for a captionless image, and embedding "" is meaningless.
     chunks = retrieve(db, bot, question) if question.strip() else []
     if not chunks and image_data_url is None:

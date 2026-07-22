@@ -36,14 +36,15 @@ def resolve_for_bot(chat_model: str | None) -> str:
     return chat_model or default_model()
 
 
-# Only one model on the self-hosted server can read images, so a turn carrying an
-# image is forced onto it regardless of the bot's configured chat model — a text
-# model handed an image would silently ignore it. Platform-admin settable so it
-# can be swapped when a better VLM is installed; deliberately NOT per-bot, so
-# tenants can't pick a model that can't see.
-_HARDCODED_VISION_DEFAULT = "qwen2.5vl:3b"
-
-
+# Vision is OFF by default: the self-hosted box can't comfortably host a VLM, so
+# an image is handed to a human instead of being guessed at. Set VISION_MODEL (a
+# platform-admin setting, deliberately NOT per-bot) to a vision-capable model to
+# turn AI image reading on — a turn carrying an image is then forced onto it,
+# since the bot's text model would silently ignore the picture.
 def vision_model() -> str:
-    """Model used whenever a message carries an image."""
-    return config_store.get("VISION_MODEL") or _HARDCODED_VISION_DEFAULT
+    """Model used for image turns, or "" when AI vision is disabled."""
+    return (config_store.get("VISION_MODEL") or "").strip()
+
+
+def vision_enabled() -> bool:
+    return bool(vision_model())

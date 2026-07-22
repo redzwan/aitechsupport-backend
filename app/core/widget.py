@@ -203,6 +203,29 @@ def find_conversation(db: Session, channel: Channel, session_id: str) -> Convers
     )
 
 
+IMAGE_HANDOFF_MESSAGE = (
+    "Thanks for the picture — I can't read attachments myself, so I've passed this "
+    "to a colleague. Someone will take a look and reply here shortly."
+)
+
+
+def flag_needs_human(db: Session, channel: Channel, session_id: str) -> Conversation | None:
+    """Put the conversation in the agent queue WITHOUT lead capture.
+
+    Used when the bot can't act on its own (e.g. the visitor sent an image and AI
+    vision is off). Never downgrades a chat a human already owns.
+    """
+    conv = find_conversation(db, channel, session_id)
+    if conv is None:
+        return None
+    if conv.status in ("bot", "resolved"):
+        conv.status = "needs_human"
+        conv.needs_human_at = datetime.utcnow()
+        db.commit()
+        db.refresh(conv)
+    return conv
+
+
 def mark_handoff(db: Session, channel: Channel, session_id: str, name: str,
                  email: str, message: str, ip: str | None = None,
                  source_url: str | None = None) -> Conversation:

@@ -266,6 +266,17 @@ def widget_chat(
         bus.publish(org_topic(channel.organization_id), {"type": "ping", "conv_id": conv.id})
         return PublicChatResponse(answer="", session_id=session_id, status=paused, handoff=True)
 
+    # Image with AI vision off: don't answer blind — store the picture and put the
+    # conversation straight in the agent queue for a human to look at.
+    if image_key and not models_catalog.vision_enabled():
+        conv = widget.record_turn(db, channel, session_id, payload.question,
+                                  widget.IMAGE_HANDOFF_MESSAGE, 0, ip=ip, source_url=src,
+                                  image_key=image_key, image_mime=image_mime)
+        widget.flag_needs_human(db, channel, session_id)
+        bus.publish(org_topic(channel.organization_id), {"type": "ping", "conv_id": conv.id})
+        return PublicChatResponse(answer=widget.IMAGE_HANDOFF_MESSAGE, session_id=session_id,
+                                  status="needs_human", handoff=True)
+
     _inference_gates(public_key, channel, db)
 
     # Generate under the global in-flight-inference cap so the widget can never
@@ -323,6 +334,22 @@ def widget_chat_stream(
             yield _sse({"type": "done", "session_id": session_id, "status": paused, "handoff": True})
 
         return StreamingResponse(paused_stream(), media_type="text/event-stream",
+                                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+    # Image with AI vision off -> straight to the human queue (see widget_chat).
+    if image_key and not models_catalog.vision_enabled():
+        iconv = widget.record_turn(db, channel, session_id, question,
+                                   widget.IMAGE_HANDOFF_MESSAGE, 0, ip=ip, source_url=src,
+                                   image_key=image_key, image_mime=image_mime)
+        widget.flag_needs_human(db, channel, session_id)
+        bus.publish(org_topic(channel.organization_id), {"type": "ping", "conv_id": iconv.id})
+
+        def image_stream():
+            yield _sse({"type": "delta", "text": widget.IMAGE_HANDOFF_MESSAGE})
+            yield _sse({"type": "done", "session_id": session_id, "status": "needs_human",
+                        "handoff": True})
+
+        return StreamingResponse(image_stream(), media_type="text/event-stream",
                                  headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
     _inference_gates(public_key, channel, db)
