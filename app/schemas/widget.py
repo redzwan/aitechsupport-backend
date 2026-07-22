@@ -71,6 +71,19 @@ class WidgetPublicConfig(BaseModel):
     position: str
     launcher_label: str
     theme: str
+    # form | whatsapp | both — which escape hatch to render when the bot gives up.
+    # The number itself is NOT here; it comes with the link, so a widget that
+    # never offers WhatsApp never ships the owner's phone number to the page.
+    handoff_mode: str = "form"
+
+
+class WhatsAppLinkResponse(BaseModel):
+    enabled: bool
+    url: str | None = None
+
+
+class WhatsAppOpenedRequest(BaseModel):
+    session_id: str | None = Field(default=None, max_length=64)
 
 
 # ===== Dashboard (JWT, org-scoped) widget config =====

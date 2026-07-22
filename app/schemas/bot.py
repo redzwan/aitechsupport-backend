@@ -1,5 +1,6 @@
 from pydantic import BaseModel, Field, field_validator
 
+from app.core.handoff import HANDOFF_MODES, normalize_wa_number
 from app.core.settings import settings
 
 
@@ -19,6 +20,35 @@ class BotUpdate(BaseModel):
     fallback_message: str | None = None
     chat_model: str | None = None
     is_active: bool | None = None
+    handoff_mode: str | None = None
+    whatsapp_number: str | None = None
+
+    @field_validator("handoff_mode")
+    @classmethod
+    def _known_mode(cls, v: str | None) -> str | None:
+        if v is None:
+            return v
+        mode = v.strip().lower()
+        if mode not in HANDOFF_MODES:
+            raise ValueError(f"handoff_mode must be one of {', '.join(HANDOFF_MODES)}")
+        return mode
+
+    @field_validator("whatsapp_number")
+    @classmethod
+    def _valid_number(cls, v: str | None) -> str | None:
+        """Store the normalized digits, so every reader gets wa.me-ready input.
+
+        Rejecting here rather than silently blanking means a typo surfaces in the
+        settings form instead of quietly disabling handoff weeks later.
+        """
+        if v is None or not v.strip():
+            return None
+        number = normalize_wa_number(v)
+        if not number:
+            raise ValueError(
+                "Enter a valid WhatsApp number with country code, e.g. +60 12-345 6789"
+            )
+        return number
 
 
 class BotOut(BaseModel):
@@ -29,6 +59,8 @@ class BotOut(BaseModel):
     fallback_message: str | None = None
     chat_model: str | None = None
     is_active: bool
+    handoff_mode: str = "form"
+    whatsapp_number: str | None = None
 
     class Config:
         from_attributes = True

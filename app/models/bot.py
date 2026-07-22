@@ -23,4 +23,15 @@ class Bot(Base):
     fallback_message = Column(Text, default="Let me connect you with a human who can help.")
     is_active = Column(Boolean, default=True, nullable=False)
 
+    # What a visitor is offered when the bot can't answer:
+    #   form     -> lead-capture form (name/email), answered in the dashboard inbox
+    #   whatsapp -> a click-to-chat link to whatsapp_number
+    #   both     -> WhatsApp first, form underneath
+    # `whatsapp`/`both` fall back to the form when whatsapp_number is unset, so a
+    # half-configured bot still has a working escape hatch.
+    handoff_mode = Column(String, default="form", nullable=False)
+    # Digits only, full international form, no '+' or separators (wa.me needs
+    # exactly this, e.g. "60123456789"). Normalized on write.
+    whatsapp_number = Column(String, nullable=True)
+
     created_at = Column(DateTime, default=datetime.utcnow)

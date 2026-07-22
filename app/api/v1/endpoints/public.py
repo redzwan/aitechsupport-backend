@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session
 from app.db.session import get_db, SessionLocal
 from app.core import (
     rag, embeddings, llm, billing, widget, limits, email, config_store, storage,
-    attachments, models_catalog,
+    attachments, models_catalog, handoff,
 )
 from app.core.events import bus, conv_topic, org_topic
 from app.core.settings import settings
@@ -33,6 +33,8 @@ from app.schemas.widget import (
     VisitorMessagesOut,
     ConversationMessageOut,
     ImageUploadOut,
+    WhatsAppLinkResponse,
+    WhatsAppOpenedRequest,
 )
 from app.schemas.site_widget import SiteWidgetPublic
 
@@ -206,9 +208,11 @@ def widget_config(public_key: str, db: Session = Depends(get_db)):
     resolved = widget.resolve_widget(db, public_key)
     if resolved is None:
         raise HTTPException(status_code=404, detail="Widget not found")
-    channel, _bot = resolved
+    channel, bot = resolved
     ap = {**widget.DEFAULT_APPEARANCE, **(channel.appearance or {})}
-    return WidgetPublicConfig(**{k: ap[k] for k in WidgetPublicConfig.model_fields})
+    # Appearance only supplies the look; handoff_mode comes from the bot.
+    fields = {k: ap[k] for k in WidgetPublicConfig.model_fields if k in ap}
+    return WidgetPublicConfig(**fields, handoff_mode=handoff.effective_mode(bot))
 
 
 def _resolve_and_ratelimit(public_key: str, request: Request, db: Session):
@@ -417,6 +421,84 @@ def widget_chat_stream(
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+@router.get("/widget/{public_key}/whatsapp", response_model=WhatsAppLinkResponse)
+def widget_whatsapp_link(
+    public_key: str,
+    request: Request,
+    session_id: str | None = None,
+    db: Session = Depends(get_db),
+):
+    """The wa.me link for this conversation, or enabled=false if not configured.
+
+    Deliberately side-effect free and fetched BEFORE the visitor clicks, so the
+    widget can render a real <a href>. Building the URL on click instead would
+    mean opening a window after an await, which iOS Safari blocks — precisely
+    the platform where a WhatsApp handoff matters most.
+    """
+    resolved = widget.resolve_widget(db, public_key)
+    if resolved is None:
+        raise HTTPException(status_code=404, detail="Widget not found")
+    channel, bot = resolved
+
+    ip = _client_ip(request)
+    if not limits.rate_limit_ok(f"{public_key}:{ip}:wa", settings.WIDGET_RATE_PER_MIN, 60):
+        raise HTTPException(status_code=429, detail="Too many requests. Please slow down.",
+                            headers={"Retry-After": "60"})
+
+    if handoff.effective_mode(bot) not in ("whatsapp", "both"):
+        return WhatsAppLinkResponse(enabled=False)
+    number = handoff.normalize_wa_number(bot.whatsapp_number)
+    if not number:
+        return WhatsAppLinkResponse(enabled=False)
+
+    sid = widget.clean_session_id(session_id)
+    if widget.is_blocked(db, channel, sid, ip=ip):
+        raise HTTPException(status_code=403, detail="chat_unavailable")
+
+    conv = widget.find_conversation(db, channel, sid)
+    msgs = []
+    if conv is not None:
+        msgs = (
+            db.query(Message)
+            .filter(Message.conversation_id == conv.id)
+            .order_by(Message.id.asc())
+            .all()
+        )
+    text = handoff.build_message(msgs, conv.id if conv else 0, bot.name)
+    return WhatsAppLinkResponse(enabled=True, url=handoff.build_link(number, text))
+
+
+@router.post("/widget/{public_key}/whatsapp/opened", response_model=HandoffResponse)
+def widget_whatsapp_opened(
+    public_key: str,
+    payload: WhatsAppOpenedRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """Beacon: the visitor actually tapped through to WhatsApp.
+
+    Split from the link endpoint so merely *offering* WhatsApp doesn't fill the
+    inbox with conversations nobody escalated. Flagging it here keeps the thread
+    visible to agents instead of the visitor silently leaving the site.
+    """
+    resolved = widget.resolve_widget(db, public_key)
+    if resolved is None:
+        raise HTTPException(status_code=404, detail="Widget not found")
+    channel, _bot = resolved
+
+    ip = _client_ip(request)
+    if not limits.rate_limit_ok(f"{public_key}:{ip}:wa-open", settings.WIDGET_RATE_PER_MIN, 60):
+        raise HTTPException(status_code=429, detail="Too many requests. Please slow down.",
+                            headers={"Retry-After": "60"})
+
+    sid = widget.clean_session_id(payload.session_id)
+    conv = widget.flag_needs_human(db, channel, sid)
+    if conv is None:
+        return HandoffResponse(ok=True, status="bot")
+    bus.publish(org_topic(channel.organization_id), {"type": "ping", "conv_id": conv.id})
+    return HandoffResponse(ok=True, status=conv.status)
 
 
 @router.post("/widget/{public_key}/handoff", response_model=HandoffResponse)
