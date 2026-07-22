@@ -37,7 +37,15 @@ def _build_system(system_prompt: str) -> str:
     )
 
 
-def _client():
+# A text model answers in seconds, but a vision model that isn't resident has to
+# be paged in first — measured at ~70s cold vs ~3s warm for a 3B VLM on the
+# self-hosted box. The old flat 45s timeout (times SDK retries) made a cold image
+# turn impossible, so vision gets its own, much longer budget.
+TEXT_TIMEOUT_SECONDS = 45.0
+VISION_TIMEOUT_SECONDS = 180.0
+
+
+def _client(timeout_seconds: float = TEXT_TIMEOUT_SECONDS, max_retries: int = 2):
     """Build the OpenAI-compatible client (bounded timeout so a hung model fails fast)."""
     from openai import OpenAI  # lazy import so the app boots without the SDK configured
 
@@ -49,9 +57,17 @@ def _client():
     return OpenAI(
         api_key=key,
         base_url=base_url,
-        timeout=httpx.Timeout(45.0, connect=5.0),
+        timeout=httpx.Timeout(timeout_seconds, connect=5.0),
+        # Retrying a cold model load just multiplies an already long wait.
+        max_retries=max_retries,
         default_headers={"X-Title": "AiTechSupport"},
     )
+
+
+def _client_for(image_data_url: str | None):
+    if image_data_url:
+        return _client(VISION_TIMEOUT_SECONDS, max_retries=0)
+    return _client()
 
 
 def _build_system_vision(system_prompt: str) -> str:
@@ -116,7 +132,7 @@ def answer(
     image_data_url: str | None = None,
 ) -> tuple[str, int]:
     """Generate a grounded answer. Returns (text, total_tokens) for usage metering."""
-    resp = _client().chat.completions.create(
+    resp = _client_for(image_data_url).chat.completions.create(
         model=model,
         max_tokens=1024,
         messages=_messages(system_prompt, context, question, image_data_url),
@@ -144,7 +160,7 @@ def answer_stream(
     Ollama's OpenAI-compatible endpoint emits a final usage-only chunk (choices=[])
     with stream_options.include_usage — so token counts stay accurate when streaming.
     """
-    stream = _client().chat.completions.create(
+    stream = _client_for(image_data_url).chat.completions.create(
         model=model,
         max_tokens=1024,
         stream=True,
