@@ -77,6 +77,14 @@ def agent_key(org_id: int, bot_id: int, conversation_id: int, mime: str) -> str:
     )
 
 
+def owns_agent_key(key: str | None, org_id: int, bot_id: int, conversation_id: int) -> bool:
+    """True only if `key` was uploaded by an agent into THIS conversation."""
+    if not key:
+        return False
+    expected = f"{storage.CHAT_IMAGE_PREFIX}{org_id}/{bot_id}/agent/{conversation_id}/"
+    return key.startswith(expected)
+
+
 def view_url(db: Session, key: str | None, mime: str | None) -> str | None:
     """Short-lived inline URL, or None if unset / expired / storage unavailable.
 

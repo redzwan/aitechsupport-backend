@@ -3,7 +3,7 @@ import json
 import logging
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import StreamingResponse
 from sqlalchemy import func, or_, and_
@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 
 from app.db.session import get_db
 from app.api.deps import get_current_user, get_agent_user
-from app.core import rag, embeddings, llm, models_catalog, billing, widget, analytics, attachments
+from app.core import rag, embeddings, llm, models_catalog, billing, widget, analytics, attachments, storage
 from app.core.events import bus, conv_topic, org_topic, user_topic
 from app.core.settings import settings
 from app.models.user import User
@@ -31,6 +31,7 @@ from app.schemas.widget import (
     WidgetAnalyticsOut,
     BlockRequest,
     ConversationTransferRequest,
+    ImageUploadOut,
 )
 
 logger = logging.getLogger(__name__)
@@ -400,6 +401,64 @@ def claim_conversation(
     return _conv_out_full(conv, db, bot)
 
 
+_AGENT_UPLOAD_CHUNK = 64 * 1024
+
+
+def _claim_agent_image(image_key: str | None, conv: Conversation) -> tuple[str | None, str | None]:
+    """An agent may only attach an image uploaded into THIS conversation."""
+    if not image_key:
+        return None, None
+    if not attachments.owns_agent_key(image_key, conv.organization_id, conv.bot_id, conv.id):
+        raise HTTPException(status_code=403, detail="That image does not belong to this conversation.")
+    ext = image_key.rsplit(".", 1)[-1].lower()
+    mime = {"jpg": "image/jpeg", "png": "image/png", "webp": "image/webp", "gif": "image/gif"}.get(ext)
+    return image_key, mime
+
+
+@router.post("/{bot_id}/conversations/{conv_id}/upload", response_model=ImageUploadOut)
+async def upload_conversation_image(
+    bot_id: int,
+    conv_id: int,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_agent_user),
+) -> ImageUploadOut:
+    """Agent uploads an image to send into a conversation (e.g. an annotated screenshot)."""
+    bot = _get_owned_bot(bot_id, db, user)
+    conv = _owned_conversation(bot, conv_id, db)
+    if not storage.is_configured(db):
+        raise HTTPException(status_code=503, detail="Image upload is unavailable.")
+
+    buf = bytearray()
+    while True:
+        part = await file.read(_AGENT_UPLOAD_CHUNK)
+        if not part:
+            break
+        buf.extend(part)
+        if len(buf) > settings.MAX_UPLOAD_BYTES:
+            raise HTTPException(status_code=413, detail="Image is too large (max 5MB).")
+    data = bytes(buf)
+    if not data:
+        raise HTTPException(status_code=400, detail="Empty file.")
+    mime = attachments.sniff_image_mime(data)
+    if mime is None:
+        raise HTTPException(status_code=415, detail="Only JPEG, PNG, WebP or GIF images are supported.")
+
+    key = attachments.agent_key(conv.organization_id, bot.id, conv.id, mime)
+    try:
+        storage.put_bytes(db, data, key, mime)
+    except Exception:
+        logger.exception("agent image upload failed for conversation %s", conv.id)
+        raise HTTPException(status_code=502, detail="Could not store the image.")
+    return ImageUploadOut(
+        image_key=key,
+        url=attachments.view_url(db, key, mime) or "",
+        mime=mime,
+        size=len(data),
+        session_id="",
+    )
+
+
 @router.post("/{bot_id}/conversations/{conv_id}/reply", response_model=ConversationMessageOut)
 def reply_conversation(
     bot_id: int,
@@ -422,6 +481,7 @@ def reply_conversation(
     conv.last_agent_at = now
     conv.last_message_at = now
     agent_name = user.full_name or user.email
+    image_key, image_mime = _claim_agent_image(payload.image_key, conv)
     msg = Message(
         organization_id=conv.organization_id,
         conversation_id=conv.id,
@@ -430,16 +490,20 @@ def reply_conversation(
         tokens=0,
         sender_user_id=user.id,
         sender_name=agent_name,
+        image_key=image_key,
+        image_mime=image_mime,
     )
     db.add(msg)
     db.commit()
     db.refresh(msg)
+    out = _message_out(db, msg)
     # Realtime: push the reply to the visitor's stream + nudge the org's agent queue.
     bus.publish(conv_topic(conv.id),
                 {"type": "message",
-                 "message": {"id": msg.id, "role": "agent", "content": msg.content, "sender_name": agent_name}})
+                 "message": {"id": msg.id, "role": "agent", "content": msg.content,
+                             "sender_name": agent_name, "image_url": out.image_url}})
     bus.publish(org_topic(conv.organization_id), {"type": "ping", "conv_id": conv.id})
-    return msg
+    return out
 
 
 @router.post("/{bot_id}/conversations/{conv_id}/release", response_model=ConversationOut)

@@ -160,15 +160,20 @@ class ConversationTransferRequest(BaseModel):
 
 
 class AgentReplyRequest(BaseModel):
-    content: str = Field(min_length=1, max_length=4000)
+    # An agent may send an image with no caption, mirroring the visitor side.
+    content: str = Field(default="", max_length=4000)
+    image_key: str | None = Field(default=None, max_length=300)
 
     @field_validator("content")
     @classmethod
-    def _not_blank(cls, v: str) -> str:
-        v = v.strip()
-        if not v:
-            raise ValueError("content must not be blank")
-        return v
+    def _strip(cls, v: str) -> str:
+        return (v or "").strip()
+
+    @model_validator(mode="after")
+    def _needs_content(self):
+        if not self.content and not self.image_key:
+            raise ValueError("send a message, an image, or both")
+        return self
 
 
 # ===== Widget analytics (JWT, org-scoped) =====
