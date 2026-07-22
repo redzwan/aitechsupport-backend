@@ -16,7 +16,10 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db, SessionLocal
-from app.core import rag, embeddings, llm, billing, widget, limits, email, config_store, storage, attachments
+from app.core import (
+    rag, embeddings, llm, billing, widget, limits, email, config_store, storage,
+    attachments, models_catalog,
+)
 from app.core.events import bus, conv_topic, org_topic
 from app.core.settings import settings
 from app.models.user import User
