@@ -29,6 +29,7 @@ CHAT_MODELS: list[dict] = [
     {"id": "anthropic/claude-sonnet-4.5", "label": "Claude Sonnet 4.5", "provider": "Anthropic"},
     {"id": "openai/gpt-5.4-mini", "label": "GPT-5.4 Mini", "provider": "OpenAI"},
     {"id": "openai/gpt-oss-120b", "label": "GPT-OSS 120B", "provider": "OpenAI (open)"},
+    {"id": "openai/gpt-oss-20b:free", "label": "GPT-OSS 20B (free)", "provider": "OpenAI (open)"},
     {"id": "mistralai/mistral-small", "label": "Mistral Small", "provider": "Mistral"},
 ]
 
