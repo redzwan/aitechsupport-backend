@@ -34,6 +34,13 @@ CHAT_MODELS: list[dict] = [
 
 _HARDCODED_DEFAULT = "anthropic/claude-haiku-4.5"
 
+# The real OpenRouter API — independent of the ambient global OPENROUTER_BASE_URL
+# setting, which an admin may have repointed at a self-hosted Ollama server as the
+# platform-wide default (see settings.py). A package explicitly configured for
+# "openrouter" must always reach actual OpenRouter, never wherever that ambient
+# default happens to point.
+_REAL_OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+
 
 def default_model() -> str:
     """Platform default model (settable via admin), else the hardcoded default."""
@@ -44,14 +51,18 @@ def resolve_for_bot(bot: "Bot", package: "Package | None") -> tuple[str, str | N
     """Resolve (model_id, base_url_override) for a bot's next answer.
 
     Precedence: bot.chat_model (admin-only override, not customer-editable) ->
-    the org's package model -> the platform default. base_url_override is only
-    set for a self-hosted package, and points the OpenAI-compatible client at
-    that package's own Ollama server instead of the global OpenRouter endpoint.
+    the org's package model -> the platform default. base_url_override pins the
+    request to where the package says the model actually lives: a self-hosted
+    package's own Ollama server, or real OpenRouter for an "openrouter" package.
+    Only a bot with no package at all (should not happen in practice) falls
+    through to the ambient global default.
     """
     model = bot.chat_model or (package.chat_model if package else None) or default_model()
     base_url = None
     if package and package.model_provider == "self_hosted" and package.self_hosted_base_url:
         base_url = package.self_hosted_base_url.rstrip("/") + "/v1"
+    elif package and package.model_provider == "openrouter":
+        base_url = _REAL_OPENROUTER_BASE_URL
     return model, base_url
 
 
