@@ -1,6 +1,6 @@
 """package model_provider/chat_model/self_hosted_base_url
 
-Revision ID: a1b2c3d4e5f6
+Revision ID: 9f1c2d3e4b5a
 Revises: d1e2f3a4b5c6
 Create Date: 2026-07-23 00:00:00.000000
 
@@ -12,7 +12,7 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision: str = 'a1b2c3d4e5f6'
+revision: str = '9f1c2d3e4b5a'
 down_revision: Union[str, None] = 'd1e2f3a4b5c6'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
