@@ -40,21 +40,43 @@ router = APIRouter()
 
 @router.get("/models", response_model=list[ModelOption])
 def list_models(user: User = Depends(get_current_user)):
-    """Suggested chat models for a bot's model dropdown (any authenticated user)."""
+    """Suggested chat models for the admin Packages model picker (any authenticated
+    user — actual write access is still gated by get_platform_admin on that endpoint)."""
     return models_catalog.CHAT_MODELS
+
+
+def _bot_out(bot: Bot, package) -> BotOut:
+    model, _base_url = models_catalog.resolve_for_bot(bot, package)
+    return BotOut(
+        id=bot.id,
+        organization_id=bot.organization_id,
+        name=bot.name,
+        system_prompt=bot.system_prompt,
+        fallback_message=bot.fallback_message,
+        effective_chat_model=model,
+        is_active=bot.is_active,
+        handoff_mode=bot.handoff_mode,
+        whatsapp_number=bot.whatsapp_number,
+    )
+
+
+def _org_package(db: Session, organization_id: int):
+    sub = billing.get_or_create_subscription(db, organization_id)
+    return billing.package_for(db, sub.plan), sub
 
 
 @router.get("", response_model=list[BotOut])
 def list_bots(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    return db.query(Bot).filter(Bot.organization_id == user.organization_id).all()
+    bots = db.query(Bot).filter(Bot.organization_id == user.organization_id).all()
+    pkg, _sub = _org_package(db, user.organization_id)
+    return [_bot_out(b, pkg) for b in bots]
 
 
 @router.post("", response_model=BotOut, status_code=201)
 def create_bot(payload: BotCreate, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     # Enforce the plan's bot limit. A missing package row is treated as the most
     # restrictive (1 bot) rather than fail-open.
-    sub = billing.get_or_create_subscription(db, user.organization_id)
-    pkg = billing.package_for(db, sub.plan)
+    pkg, sub = _org_package(db, user.organization_id)
     max_bots = pkg.max_bots if pkg is not None else 1
     current = db.query(Bot).filter(Bot.organization_id == user.organization_id).count()
     if current >= max_bots:
@@ -67,7 +89,7 @@ def create_bot(payload: BotCreate, db: Session = Depends(get_db), user: User = D
     db.add(bot)
     db.commit()
     db.refresh(bot)
-    return bot
+    return _bot_out(bot, pkg)
 
 
 def _message_out(db: Session, m: Message) -> ConversationMessageOut:
@@ -108,7 +130,8 @@ def update_bot(
         setattr(bot, field, value)
     db.commit()
     db.refresh(bot)
-    return bot
+    pkg, _sub = _org_package(db, user.organization_id)
+    return _bot_out(bot, pkg)
 
 
 @router.post("/{bot_id}/chat", response_model=ChatResponse)

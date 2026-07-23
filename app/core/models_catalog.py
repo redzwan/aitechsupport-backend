@@ -1,13 +1,21 @@
 """Catalog of selectable chat models.
 
-Ids are suggestions for the admin UI dropdown; a bot's `chat_model` is free text,
-so an admin can enter any id. For the self-hosted path these are Ollama model tags
-served from the ai-server (see settings.OLLAMA_BASE_URL); for the external path they
-are OpenRouter ids (verify slugs at https://openrouter.ai/models).
+Ids are suggestions for the admin Packages UI dropdown; an admin can enter any id
+as free text too. For the self-hosted path these are Ollama model tags served from
+a package's own self_hosted_base_url; for the external path they are OpenRouter ids
+(verify slugs at https://openrouter.ai/models).
+
+Model choice is a package (plan) decision, not a customer one — see resolve_for_bot().
 """
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from app.core import config_store
+
+if TYPE_CHECKING:
+    from app.models.bot import Bot
+    from app.models.package import Package
 
 CHAT_MODELS: list[dict] = [
     # Self-hosted (Ollama on the ai-server) — the default path.
@@ -32,8 +40,19 @@ def default_model() -> str:
     return config_store.get("DEFAULT_CHAT_MODEL") or _HARDCODED_DEFAULT
 
 
-def resolve_for_bot(chat_model: str | None) -> str:
-    return chat_model or default_model()
+def resolve_for_bot(bot: "Bot", package: "Package | None") -> tuple[str, str | None]:
+    """Resolve (model_id, base_url_override) for a bot's next answer.
+
+    Precedence: bot.chat_model (admin-only override, not customer-editable) ->
+    the org's package model -> the platform default. base_url_override is only
+    set for a self-hosted package, and points the OpenAI-compatible client at
+    that package's own Ollama server instead of the global OpenRouter endpoint.
+    """
+    model = bot.chat_model or (package.chat_model if package else None) or default_model()
+    base_url = None
+    if package and package.model_provider == "self_hosted" and package.self_hosted_base_url:
+        base_url = package.self_hosted_base_url.rstrip("/") + "/v1"
+    return model, base_url
 
 
 # Vision is OFF by default: the self-hosted box can't comfortably host a VLM, so

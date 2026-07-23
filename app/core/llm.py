@@ -45,18 +45,23 @@ TEXT_TIMEOUT_SECONDS = 45.0
 VISION_TIMEOUT_SECONDS = 180.0
 
 
-def _client(timeout_seconds: float = TEXT_TIMEOUT_SECONDS, max_retries: int = 2):
-    """Build the OpenAI-compatible client (bounded timeout so a hung model fails fast)."""
+def _client(timeout_seconds: float = TEXT_TIMEOUT_SECONDS, max_retries: int = 2, base_url: str | None = None):
+    """Build the OpenAI-compatible client (bounded timeout so a hung model fails fast).
+
+    `base_url` lets a caller point this call at a specific package's self-hosted
+    Ollama server instead of the global OpenRouter endpoint; omit to use the
+    platform default.
+    """
     from openai import OpenAI  # lazy import so the app boots without the SDK configured
 
-    base_url = _base_url()
+    url = base_url or _base_url()
     # Self-hosted Ollama ignores the key but the OpenAI SDK requires a non-empty string.
-    key = config_store.get("OPENROUTER_API_KEY") or ("ollama" if not _needs_key(base_url) else "")
+    key = config_store.get("OPENROUTER_API_KEY") or ("ollama" if not _needs_key(url) else "")
     if not key:
         raise RuntimeError("OPENROUTER_API_KEY is not configured")
     return OpenAI(
         api_key=key,
-        base_url=base_url,
+        base_url=url,
         timeout=httpx.Timeout(timeout_seconds, connect=5.0),
         # Retrying a cold model load just multiplies an already long wait.
         max_retries=max_retries,
@@ -64,10 +69,10 @@ def _client(timeout_seconds: float = TEXT_TIMEOUT_SECONDS, max_retries: int = 2)
     )
 
 
-def _client_for(image_data_url: str | None):
+def _client_for(image_data_url: str | None, base_url: str | None = None):
     if image_data_url:
-        return _client(VISION_TIMEOUT_SECONDS, max_retries=0)
-    return _client()
+        return _client(VISION_TIMEOUT_SECONDS, max_retries=0, base_url=base_url)
+    return _client(base_url=base_url)
 
 
 def _build_system_vision(system_prompt: str) -> str:
@@ -130,9 +135,10 @@ def answer(
     question: str,
     model: str,
     image_data_url: str | None = None,
+    base_url: str | None = None,
 ) -> tuple[str, int]:
     """Generate a grounded answer. Returns (text, total_tokens) for usage metering."""
-    resp = _client_for(image_data_url).chat.completions.create(
+    resp = _client_for(image_data_url, base_url).chat.completions.create(
         model=model,
         max_tokens=1024,
         messages=_messages(system_prompt, context, question, image_data_url),
@@ -153,6 +159,7 @@ def answer_stream(
     question: str,
     model: str,
     image_data_url: str | None = None,
+    base_url: str | None = None,
 ):
     """Stream a grounded answer. Yields {'type':'delta','text':...} per token chunk,
     then a terminal {'type':'final','text':<full>,'tokens':<total>} for persistence/metering.
@@ -160,7 +167,7 @@ def answer_stream(
     Ollama's OpenAI-compatible endpoint emits a final usage-only chunk (choices=[])
     with stream_options.include_usage — so token counts stay accurate when streaming.
     """
-    stream = _client_for(image_data_url).chat.completions.create(
+    stream = _client_for(image_data_url, base_url).chat.completions.create(
         model=model,
         max_tokens=1024,
         stream=True,

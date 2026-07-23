@@ -8,7 +8,7 @@ import logging
 
 from sqlalchemy.orm import Session
 
-from app.core import embeddings, llm, models_catalog, storage
+from app.core import billing, embeddings, llm, models_catalog, storage
 from app.core.settings import settings
 from app.models.knowledge import Chunk, KnowledgeSource
 from app.models.bot import Bot
@@ -64,14 +64,15 @@ def _prepare(
 ):
     """Shared setup for both answer paths.
 
-    Returns (context, question, model, image_data_url) or None when there is
-    nothing to answer with — the caller then emits the fallback (0 tokens), which
-    is the handoff signal.
+    Returns (context, question, model, image_data_url, base_url) or None when
+    there is nothing to answer with — the caller then emits the fallback
+    (0 tokens), which is the handoff signal.
 
     An image turn is answered even with NO retrieved context: the picture is the
     evidence, and handing off the moment the KB misses would defeat the feature.
     A turn carrying an image is also forced onto the vision model, since the
-    bot's configured text model would silently ignore the picture.
+    bot's configured text model would silently ignore the picture. Vision stays
+    platform-wide (not package-controlled), so it never gets a base_url override.
     """
     # Vision may be disabled (no VISION_MODEL); then an image is ignored here and
     # the caller has already routed the turn to a human.
@@ -83,8 +84,11 @@ def _prepare(
         return None
     context = "\n\n---\n\n".join(c.content for c in chunks)
     if image_data_url:
-        return context, (question.strip() or DEFAULT_IMAGE_PROMPT), models_catalog.vision_model(), image_data_url
-    return context, question, models_catalog.resolve_for_bot(bot.chat_model), None
+        return context, (question.strip() or DEFAULT_IMAGE_PROMPT), models_catalog.vision_model(), image_data_url, None
+    sub = billing.get_or_create_subscription(db, bot.organization_id)
+    package = billing.package_for(db, sub.plan)
+    model, base_url = models_catalog.resolve_for_bot(bot, package)
+    return context, question, model, None, base_url
 
 
 def answer_question(
@@ -101,9 +105,9 @@ def answer_question(
     prepared = _prepare(db, bot, question, image_key, image_mime)
     if prepared is None:
         return (bot.fallback_message or "I don't have an answer for that yet."), 0
-    context, q, model, image_data_url = prepared
+    context, q, model, image_data_url, base_url = prepared
     return llm.answer(
-        bot.system_prompt or "", context, q, model=model, image_data_url=image_data_url
+        bot.system_prompt or "", context, q, model=model, image_data_url=image_data_url, base_url=base_url
     )
 
 
@@ -124,7 +128,7 @@ def answer_question_stream(
         yield {"type": "delta", "text": fb}
         yield {"type": "final", "text": fb, "tokens": 0}
         return
-    context, q, model, image_data_url = prepared
+    context, q, model, image_data_url, base_url = prepared
     yield from llm.answer_stream(
-        bot.system_prompt or "", context, q, model=model, image_data_url=image_data_url
+        bot.system_prompt or "", context, q, model=model, image_data_url=image_data_url, base_url=base_url
     )

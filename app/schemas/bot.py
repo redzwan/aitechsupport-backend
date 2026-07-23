@@ -8,8 +8,6 @@ class BotCreate(BaseModel):
     name: str
     system_prompt: str | None = None
     fallback_message: str | None = None
-    # OpenRouter model id; null -> platform default. Free text so any model works.
-    chat_model: str | None = None
 
 
 class BotUpdate(BaseModel):
@@ -18,7 +16,6 @@ class BotUpdate(BaseModel):
     name: str | None = None
     system_prompt: str | None = None
     fallback_message: str | None = None
-    chat_model: str | None = None
     is_active: bool | None = None
     handoff_mode: str | None = None
     whatsapp_number: str | None = None
@@ -57,7 +54,9 @@ class BotOut(BaseModel):
     name: str
     system_prompt: str | None = None
     fallback_message: str | None = None
-    chat_model: str | None = None
+    # The model actually answering this bot, resolved from its org's package
+    # (or an admin-only override) — read-only, not customer-editable.
+    effective_chat_model: str
     is_active: bool
     handoff_mode: str = "form"
     whatsapp_number: str | None = None

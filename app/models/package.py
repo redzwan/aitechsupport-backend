@@ -22,4 +22,11 @@ class Package(Base):
     is_active = Column(Boolean, default=True, nullable=False)
     sort_order = Column(Integer, default=0, nullable=False)
 
+    # Which AI model bots on this package answer with — the customer no longer
+    # picks a model themselves, the admin decides it per package.
+    # "self_hosted" (Ollama on self_hosted_base_url) or "openrouter".
+    model_provider = Column(String, default="openrouter", nullable=False)
+    chat_model = Column(String, nullable=True)  # Ollama tag or OpenRouter id; falls back to models_catalog.default_model()
+    self_hosted_base_url = Column(String, nullable=True)  # only used when model_provider == "self_hosted"
+
     created_at = Column(DateTime, default=datetime.utcnow)
