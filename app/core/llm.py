@@ -7,6 +7,7 @@ resolve through config_store (admin DB setting first, then env).
 from __future__ import annotations
 
 import logging
+import time
 
 import httpx
 
@@ -49,12 +50,15 @@ TEXT_TIMEOUT_SECONDS = 45.0
 VISION_TIMEOUT_SECONDS = 180.0
 
 
-def _client(timeout_seconds: float = TEXT_TIMEOUT_SECONDS, max_retries: int = 2, base_url: str | None = None):
+def _client(timeout_seconds: float = TEXT_TIMEOUT_SECONDS, max_retries: int = 0, base_url: str | None = None):
     """Build the OpenAI-compatible client (bounded timeout so a hung model fails fast).
 
-    `base_url` lets a caller point this call at a specific package's self-hosted
+    `base_url` lets a caller point this call at a specific candidate's self-hosted
     Ollama server instead of the global OpenRouter endpoint; omit to use the
-    platform default.
+    platform default. max_retries defaults to 0: retrying the SAME slow/stuck
+    endpoint just multiplies the wait (up to 3x with the SDK default) — the chat
+    fallback chain (see answer_with_fallback) is our retry strategy, and it should
+    move to the NEXT candidate quickly rather than hammer a struggling one.
     """
     from openai import OpenAI  # lazy import so the app boots without the SDK configured
 
@@ -219,14 +223,19 @@ def answer_with_fallback(
     errors — the fallback chain (see models_catalog)."""
     errors: list[tuple[str, Exception]] = []
     for model, base_url in candidates:
+        started = time.monotonic()
         try:
             text, tokens = answer(
                 system_prompt, context, question, model=model,
                 image_data_url=image_data_url, base_url=base_url,
             )
+            logger.info("chat candidate %s answered in %.1fs", model, time.monotonic() - started)
             return text, tokens, model
         except Exception as e:  # noqa: BLE001 — try the next candidate
-            logger.warning("chat candidate %s failed, trying next: %s", model, e)
+            logger.warning(
+                "chat candidate %s failed after %.1fs, trying next: %s",
+                model, time.monotonic() - started, e,
+            )
             errors.append((model, e))
     raise AllCandidatesFailed(errors)
 
@@ -247,6 +256,7 @@ def answer_stream_with_fallback(
     errors: list[tuple[str, Exception]] = []
     for model, base_url in candidates:
         started = False
+        t0 = time.monotonic()
         try:
             for ev in answer_stream(
                 system_prompt, context, question, model=model,
@@ -254,10 +264,12 @@ def answer_stream_with_fallback(
             ):
                 started = True
                 yield ev
+            logger.info("chat candidate %s streamed in %.1fs", model, time.monotonic() - t0)
             return
         except Exception as e:  # noqa: BLE001
             logger.warning(
-                "chat candidate %s failed (started=%s): %s", model, started, e
+                "chat candidate %s failed after %.1fs (started=%s): %s",
+                model, time.monotonic() - t0, started, e,
             )
             errors.append((model, e))
             if started:
