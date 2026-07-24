@@ -19,6 +19,13 @@ class Settings(BaseSettings):
     PROJECT_NAME: str = "AiTechSupport API"
     DEBUG: bool = os.getenv("DEBUG", "False").lower() == "true"
 
+    # ===== Logging =====
+    # LOG_LEVEL covers application logs (e.g. which fallback model answered and
+    # how long it took). HTTP client libraries are capped separately at
+    # LOG_LEVEL_HTTP, since they emit a line per request. See core/logging_config.
+    LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
+    LOG_LEVEL_HTTP: str = os.getenv("LOG_LEVEL_HTTP", "WARNING")
+
     # ===== Security =====
     # No hardcoded fallback: a missing/placeholder key is rejected at startup below.
     SECRET_KEY: str = os.getenv("SECRET_KEY", "")

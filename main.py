@@ -7,7 +7,12 @@ from fastapi import FastAPI
 from app.db.session import engine, Base
 from app.core.settings import settings, cors_origins
 from app.core.cors import WidgetCORSMiddleware
+from app.core.logging_config import setup_logging
 from app.api.v1.api import api_router
+
+# Configure logging before anything else runs, so even boot-time failures below
+# are recorded with a timestamp and source rather than a bare traceback.
+setup_logging(level=settings.LOG_LEVEL, noisy_level=settings.LOG_LEVEL_HTTP)
 
 # Dev convenience: create tables on boot. In production, migrations are the
 # source of truth (`alembic upgrade head`).
