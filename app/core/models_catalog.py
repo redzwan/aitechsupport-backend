@@ -1,14 +1,16 @@
-"""Catalog of selectable chat models, and the platform-wide chat fallback chain.
+"""Catalog of selectable chat models, and the chat fallback chain.
 
 Ids are suggestions for the admin UI dropdowns; an admin can enter any id as free
 text too. For the self-hosted path these are Ollama model tags served from a
 tier's own base_url; for the external path they are OpenRouter ids (verify slugs
 at https://openrouter.ai/models).
 
-Which model answers a bot's question is NOT a per-bot or per-package choice — it's
-a single ordered fallback chain (see fallback_chain() / resolve_candidates()),
-tried top to bottom until one candidate answers successfully. A bot's own
-chat_model column still acts as a rare admin-only override, tried before the chain.
+Which model answers a bot's question is not a customer choice — it's an ordered
+fallback chain owned by the org's package (Package.fallback_chain), tried top to
+bottom until one candidate answers successfully. A package with no chain of its
+own inherits the platform-wide one (CHAT_FALLBACK_CHAIN / DEFAULT_FALLBACK_CHAIN),
+so the Free plan can stay self-hosted while paid plans use OpenRouter. A bot's own
+chat_model column is a rare admin-only override, tried before the chain.
 """
 from __future__ import annotations
 
@@ -19,6 +21,7 @@ from app.core import config_store
 
 if TYPE_CHECKING:
     from app.models.bot import Bot
+    from app.models.package import Package
 
 CHAT_MODELS: list[dict] = [
     # Self-hosted (Ollama on the ai-server) — the default path.
@@ -87,15 +90,25 @@ def _tier_base_url(tier: dict) -> str | None:
     return None
 
 
-def resolve_candidates(bot: "Bot") -> list[tuple[str, str | None]]:
+def chain_for_package(package: "Package | None") -> list[dict]:
+    """The package's own fallback chain, or the platform-wide one when it has
+    none (NULL) — so a newly created package answers before it's configured."""
+    if package is not None:
+        tiers = package.fallback_chain
+        if isinstance(tiers, list) and tiers:
+            return tiers
+    return fallback_chain()
+
+
+def resolve_candidates(bot: "Bot", package: "Package | None" = None) -> list[tuple[str, str | None]]:
     """Ordered (model_id, base_url_override) candidates to try for a bot's next
     answer: bot.chat_model (a rare admin-only override, not customer-editable)
-    first if set, then every tier of the platform fallback chain in order.
+    first if set, then every tier of the package's fallback chain in order.
     """
     candidates: list[tuple[str, str | None]] = []
     if bot.chat_model:
         candidates.append((bot.chat_model, None))
-    for tier in fallback_chain():
+    for tier in chain_for_package(package):
         model = (tier.get("model") or "").strip()
         if model:
             candidates.append((model, _tier_base_url(tier)))

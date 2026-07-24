@@ -8,7 +8,7 @@ import logging
 
 from sqlalchemy.orm import Session
 
-from app.core import embeddings, llm, models_catalog, storage
+from app.core import billing, embeddings, llm, models_catalog, storage
 from app.core.settings import settings
 from app.models.knowledge import Chunk, KnowledgeSource
 from app.models.bot import Bot
@@ -67,7 +67,8 @@ def _prepare(
     Returns (context, question, candidates, image_data_url) or None when there is
     nothing to answer with — the caller then emits the fallback (0 tokens), which
     is the handoff signal. `candidates` is an ordered list of (model, base_url)
-    to try in turn (see models_catalog.resolve_candidates / the fallback chain).
+    to try in turn — the org's package fallback chain (see
+    models_catalog.resolve_candidates).
 
     An image turn is answered even with NO retrieved context: the picture is the
     evidence, and handing off the moment the KB misses would defeat the feature.
@@ -87,7 +88,9 @@ def _prepare(
     if image_data_url:
         candidates = [(models_catalog.vision_model(), None)]
         return context, (question.strip() or DEFAULT_IMAGE_PROMPT), candidates, image_data_url
-    return context, question, models_catalog.resolve_candidates(bot), None
+    sub = billing.get_or_create_subscription(db, bot.organization_id)
+    package = billing.package_for(db, sub.plan)
+    return context, question, models_catalog.resolve_candidates(bot, package), None
 
 
 def answer_question(

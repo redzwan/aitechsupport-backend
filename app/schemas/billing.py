@@ -1,4 +1,6 @@
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel
+
+from app.schemas.setting import FallbackTier
 
 
 class PackageOut(BaseModel):
@@ -11,9 +13,9 @@ class PackageOut(BaseModel):
     features: list[str] = []
     is_active: bool
     sort_order: int
-    model_provider: str
-    chat_model: str | None = None
-    self_hosted_base_url: str | None = None
+    # Ordered chat fallback chain for this plan; null -> inherit the
+    # platform-wide chain (see models_catalog.chain_for_package).
+    fallback_chain: list[FallbackTier] | None = None
 
     class Config:
         from_attributes = True
@@ -28,17 +30,7 @@ class PackageUpsert(BaseModel):
     features: list[str] = []
     is_active: bool = True
     sort_order: int = 0
-    model_provider: str = "openrouter"
-    chat_model: str | None = None
-    self_hosted_base_url: str | None = None
-
-    @model_validator(mode="after")
-    def _validate_model_provider(self) -> "PackageUpsert":
-        if self.model_provider not in ("self_hosted", "openrouter"):
-            raise ValueError("model_provider must be 'self_hosted' or 'openrouter'")
-        if self.model_provider == "self_hosted" and not (self.self_hosted_base_url or "").strip():
-            raise ValueError("self_hosted_base_url is required when model_provider is 'self_hosted'")
-        return self
+    fallback_chain: list[FallbackTier] | None = None
 
 
 class SubscriptionOut(BaseModel):

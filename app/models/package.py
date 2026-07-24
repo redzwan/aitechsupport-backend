@@ -22,11 +22,17 @@ class Package(Base):
     is_active = Column(Boolean, default=True, nullable=False)
     sort_order = Column(Integer, default=0, nullable=False)
 
-    # Which AI model bots on this package answer with — the customer no longer
-    # picks a model themselves, the admin decides it per package.
-    # "self_hosted" (Ollama on self_hosted_base_url) or "openrouter".
+    # Ordered chat fallback chain for bots on this package: a list of
+    # {label, provider, base_url, model} tried top to bottom until one answers
+    # (see models_catalog.resolve_candidates). NULL -> inherit the platform-wide
+    # chain from settings, so a new package works before it's configured.
+    fallback_chain = Column(JSON, nullable=True)
+
+    # DEPRECATED — superseded by fallback_chain above. Nothing reads these; they
+    # are kept only to avoid a destructive migration and should not be exposed in
+    # the API or admin UI (stale values here once silently misled the operator).
     model_provider = Column(String, default="openrouter", nullable=False)
-    chat_model = Column(String, nullable=True)  # Ollama tag or OpenRouter id; falls back to models_catalog.default_model()
-    self_hosted_base_url = Column(String, nullable=True)  # only used when model_provider == "self_hosted"
+    chat_model = Column(String, nullable=True)
+    self_hosted_base_url = Column(String, nullable=True)
 
     created_at = Column(DateTime, default=datetime.utcnow)
