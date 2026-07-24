@@ -291,6 +291,4 @@ def answer_stream_with_fallback(
             errors.append((model, e))
             if content_seen:
                 raise
-            if started:
-                raise
     raise AllCandidatesFailed(errors)
