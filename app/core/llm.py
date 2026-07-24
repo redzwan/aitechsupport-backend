@@ -229,6 +229,13 @@ def answer_with_fallback(
                 system_prompt, context, question, model=model,
                 image_data_url=image_data_url, base_url=base_url,
             )
+            if not text.strip():
+                # A "successful" call that produced nothing visible (e.g. a
+                # reasoning model that spent its whole budget on hidden
+                # thinking) is as useless to the visitor as an error — treat it
+                # as one so we cascade to the next candidate instead of
+                # silently returning a blank answer.
+                raise ValueError(f"{model} returned an empty answer (tokens={tokens})")
             logger.info("chat candidate %s answered in %.1fs", model, time.monotonic() - started)
             return text, tokens, model
         except Exception as e:  # noqa: BLE001 — try the next candidate
@@ -248,30 +255,42 @@ def answer_stream_with_fallback(
     image_data_url: str | None = None,
 ):
     """Streaming twin of answer_with_fallback. Only falls back to the next
-    candidate if the CURRENT one fails before yielding any delta (connection
-    refused, model-not-found, rate-limited — all fail immediately). Once a delta
-    has reached the caller the visitor may already be seeing it, so a mid-stream
-    failure is re-raised rather than silently restarted on a different model.
+    candidate if the CURRENT one fails before yielding any delta content, OR
+    finishes with no visible content at all (e.g. a reasoning model that spent
+    its whole budget on hidden thinking and never emitted a 'delta' — as useless
+    to the visitor as an error). Once real delta content has reached the caller,
+    the visitor may already be seeing it, so a later failure is re-raised rather
+    than silently restarted on a different model.
     """
     errors: list[tuple[str, Exception]] = []
     for model, base_url in candidates:
-        started = False
+        content_seen = False
         t0 = time.monotonic()
         try:
             for ev in answer_stream(
                 system_prompt, context, question, model=model,
                 image_data_url=image_data_url, base_url=base_url,
             ):
-                started = True
+                if ev.get("type") == "delta":
+                    content_seen = True
+                    yield ev
+                    continue
+                # 'final': if nothing visible was ever shown AND the full text
+                # is also blank, this candidate produced nothing — fail over
+                # instead of yielding an empty terminal event to the visitor.
+                if not content_seen and not (ev.get("text") or "").strip():
+                    raise ValueError(f"{model} produced no content (reasoning-only or empty response)")
                 yield ev
             logger.info("chat candidate %s streamed in %.1fs", model, time.monotonic() - t0)
             return
         except Exception as e:  # noqa: BLE001
             logger.warning(
-                "chat candidate %s failed after %.1fs (started=%s): %s",
-                model, time.monotonic() - t0, started, e,
+                "chat candidate %s failed after %.1fs (content_seen=%s): %s",
+                model, time.monotonic() - t0, content_seen, e,
             )
             errors.append((model, e))
+            if content_seen:
+                raise
             if started:
                 raise
     raise AllCandidatesFailed(errors)
