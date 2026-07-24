@@ -1,14 +1,18 @@
 """Chat answer generation via OpenRouter (OpenAI-compatible API).
 
 One API key reaches many providers/models (Claude, GPT, gpt-oss, Mistral, Gemma).
-The model id is chosen per bot (see models_catalog). Keys resolve through
-config_store (admin DB setting first, then env).
+The model id is chosen from the platform fallback chain (see models_catalog). Keys
+resolve through config_store (admin DB setting first, then env).
 """
 from __future__ import annotations
+
+import logging
 
 import httpx
 
 from app.core import config_store
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
 
@@ -192,3 +196,70 @@ def answer_stream(
             system_prompt, context, question, full, has_image=bool(image_data_url)
         )
     yield {"type": "final", "text": full, "tokens": tokens}
+
+
+class AllCandidatesFailed(Exception):
+    """Every candidate in a fallback chain errored; carries each (model, error)."""
+
+    def __init__(self, errors: list[tuple[str, Exception]]):
+        self.errors = errors
+        detail = "; ".join(f"{model}: {err}" for model, err in errors)
+        super().__init__(f"all {len(errors)} chat model candidate(s) failed: {detail}")
+
+
+def answer_with_fallback(
+    system_prompt: str,
+    context: str,
+    question: str,
+    candidates: list[tuple[str, str | None]],
+    image_data_url: str | None = None,
+) -> tuple[str, int, str]:
+    """Try each (model, base_url) candidate in order; return the first success as
+    (text, tokens, model_used). Raises AllCandidatesFailed only if every candidate
+    errors — the fallback chain (see models_catalog)."""
+    errors: list[tuple[str, Exception]] = []
+    for model, base_url in candidates:
+        try:
+            text, tokens = answer(
+                system_prompt, context, question, model=model,
+                image_data_url=image_data_url, base_url=base_url,
+            )
+            return text, tokens, model
+        except Exception as e:  # noqa: BLE001 — try the next candidate
+            logger.warning("chat candidate %s failed, trying next: %s", model, e)
+            errors.append((model, e))
+    raise AllCandidatesFailed(errors)
+
+
+def answer_stream_with_fallback(
+    system_prompt: str,
+    context: str,
+    question: str,
+    candidates: list[tuple[str, str | None]],
+    image_data_url: str | None = None,
+):
+    """Streaming twin of answer_with_fallback. Only falls back to the next
+    candidate if the CURRENT one fails before yielding any delta (connection
+    refused, model-not-found, rate-limited — all fail immediately). Once a delta
+    has reached the caller the visitor may already be seeing it, so a mid-stream
+    failure is re-raised rather than silently restarted on a different model.
+    """
+    errors: list[tuple[str, Exception]] = []
+    for model, base_url in candidates:
+        started = False
+        try:
+            for ev in answer_stream(
+                system_prompt, context, question, model=model,
+                image_data_url=image_data_url, base_url=base_url,
+            ):
+                started = True
+                yield ev
+            return
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "chat candidate %s failed (started=%s): %s", model, started, e
+            )
+            errors.append((model, e))
+            if started:
+                raise
+    raise AllCandidatesFailed(errors)

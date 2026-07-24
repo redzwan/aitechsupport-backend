@@ -1,21 +1,24 @@
-"""Catalog of selectable chat models.
+"""Catalog of selectable chat models, and the platform-wide chat fallback chain.
 
-Ids are suggestions for the admin Packages UI dropdown; an admin can enter any id
-as free text too. For the self-hosted path these are Ollama model tags served from
-a package's own self_hosted_base_url; for the external path they are OpenRouter ids
-(verify slugs at https://openrouter.ai/models).
+Ids are suggestions for the admin UI dropdowns; an admin can enter any id as free
+text too. For the self-hosted path these are Ollama model tags served from a
+tier's own base_url; for the external path they are OpenRouter ids (verify slugs
+at https://openrouter.ai/models).
 
-Model choice is a package (plan) decision, not a customer one — see resolve_for_bot().
+Which model answers a bot's question is NOT a per-bot or per-package choice — it's
+a single ordered fallback chain (see fallback_chain() / resolve_candidates()),
+tried top to bottom until one candidate answers successfully. A bot's own
+chat_model column still acts as a rare admin-only override, tried before the chain.
 """
 from __future__ import annotations
 
+import json
 from typing import TYPE_CHECKING
 
 from app.core import config_store
 
 if TYPE_CHECKING:
     from app.models.bot import Bot
-    from app.models.package import Package
 
 CHAT_MODELS: list[dict] = [
     # Self-hosted (Ollama on the ai-server) — the default path.
@@ -48,23 +51,57 @@ def default_model() -> str:
     return config_store.get("DEFAULT_CHAT_MODEL") or _HARDCODED_DEFAULT
 
 
-def resolve_for_bot(bot: "Bot", package: "Package | None") -> tuple[str, str | None]:
-    """Resolve (model_id, base_url_override) for a bot's next answer.
+# The platform's reliability chain when no admin override is configured yet:
+# two self-hosted boxes, then a free OpenRouter model as a last resort so a
+# customer-facing chat never hard-fails just because one GPU box is down.
+DEFAULT_FALLBACK_CHAIN: list[dict] = [
+    {"label": "black", "provider": "self_hosted",
+     "base_url": "http://100.102.172.23:11434", "model": "qwen3.5:9b-q4_K_M"},
+    {"label": "ai-server", "provider": "self_hosted",
+     "base_url": "http://100.101.148.46:11434", "model": "qwen3.5:4b-q4_K_M"},
+    {"label": "openrouter-free", "provider": "openrouter",
+     "base_url": None, "model": "openai/gpt-oss-20b:free"},
+]
 
-    Precedence: bot.chat_model (admin-only override, not customer-editable) ->
-    the org's package model -> the platform default. base_url_override pins the
-    request to where the package says the model actually lives: a self-hosted
-    package's own Ollama server, or real OpenRouter for an "openrouter" package.
-    Only a bot with no package at all (should not happen in practice) falls
-    through to the ambient global default.
+
+def fallback_chain() -> list[dict]:
+    """Admin-configured chat fallback chain (CHAT_FALLBACK_CHAIN, JSON), else the
+    hardcoded default above."""
+    raw = config_store.get("CHAT_FALLBACK_CHAIN")
+    if raw:
+        try:
+            tiers = json.loads(raw)
+            if isinstance(tiers, list) and tiers:
+                return tiers
+        except (ValueError, TypeError):
+            pass
+    return DEFAULT_FALLBACK_CHAIN
+
+
+def _tier_base_url(tier: dict) -> str | None:
+    if tier.get("provider") == "self_hosted":
+        base = (tier.get("base_url") or "").rstrip("/")
+        return f"{base}/v1" if base else None
+    if tier.get("provider") == "openrouter":
+        return _REAL_OPENROUTER_BASE_URL
+    return None
+
+
+def resolve_candidates(bot: "Bot") -> list[tuple[str, str | None]]:
+    """Ordered (model_id, base_url_override) candidates to try for a bot's next
+    answer: bot.chat_model (a rare admin-only override, not customer-editable)
+    first if set, then every tier of the platform fallback chain in order.
     """
-    model = bot.chat_model or (package.chat_model if package else None) or default_model()
-    base_url = None
-    if package and package.model_provider == "self_hosted" and package.self_hosted_base_url:
-        base_url = package.self_hosted_base_url.rstrip("/") + "/v1"
-    elif package and package.model_provider == "openrouter":
-        base_url = _REAL_OPENROUTER_BASE_URL
-    return model, base_url
+    candidates: list[tuple[str, str | None]] = []
+    if bot.chat_model:
+        candidates.append((bot.chat_model, None))
+    for tier in fallback_chain():
+        model = (tier.get("model") or "").strip()
+        if model:
+            candidates.append((model, _tier_base_url(tier)))
+    if not candidates:
+        candidates.append((default_model(), None))
+    return candidates
 
 
 # Vision is OFF by default: the self-hosted box can't comfortably host a VLM, so

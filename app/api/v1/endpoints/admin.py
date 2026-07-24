@@ -18,7 +18,7 @@ from app.models.payment import Payment
 from app.models.email_template import EmailTemplate
 from app.models.page import Page
 from app.schemas.content import HomepageUpdate, PageAdminOut, PageCreate, PageUpdate
-from app.schemas.setting import SettingsUpdate, SettingsOut
+from app.schemas.setting import SettingsUpdate, SettingsOut, FallbackChainOut, FallbackChainUpdate
 from app.schemas.site_widget import SiteWidgetOut, SiteWidgetUpdate
 from app.schemas.storage import StorageSettingsOut, StorageSettingsUpdate
 from app.schemas.billing import (
@@ -87,6 +87,29 @@ def update_settings(
     if updates:
         config_store.set_many(db, updates)
     return get_settings(db=db, admin=admin)
+
+
+# ===== Chat model fallback chain =====
+# Which model answers a bot's question is NOT per-bot/per-package — it's this one
+# ordered chain, tried top to bottom until a candidate answers successfully (see
+# app.core.models_catalog / app.core.llm.answer_with_fallback).
+
+@router.get("/fallback-chain", response_model=FallbackChainOut)
+def get_fallback_chain(admin: User = Depends(get_platform_admin)) -> FallbackChainOut:
+    return FallbackChainOut(tiers=models_catalog.fallback_chain())
+
+
+@router.put("/fallback-chain", response_model=FallbackChainOut)
+def update_fallback_chain(
+    payload: FallbackChainUpdate,
+    db: Session = Depends(get_db),
+    admin: User = Depends(get_platform_admin),
+) -> FallbackChainOut:
+    if not payload.tiers:
+        raise HTTPException(status_code=400, detail="At least one fallback tier is required")
+    tiers = [t.model_dump() for t in payload.tiers]
+    config_store.set_many(db, {"CHAT_FALLBACK_CHAIN": json.dumps(tiers)})
+    return FallbackChainOut(tiers=tiers)
 
 
 # ===== Support widget on our own site (aitechsupport.my) =====

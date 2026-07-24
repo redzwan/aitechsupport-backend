@@ -45,8 +45,8 @@ def list_models(user: User = Depends(get_current_user)):
     return models_catalog.CHAT_MODELS
 
 
-def _bot_out(bot: Bot, package) -> BotOut:
-    model, _base_url = models_catalog.resolve_for_bot(bot, package)
+def _bot_out(bot: Bot) -> BotOut:
+    model, _base_url = models_catalog.resolve_candidates(bot)[0]
     return BotOut(
         id=bot.id,
         organization_id=bot.organization_id,
@@ -68,8 +68,7 @@ def _org_package(db: Session, organization_id: int):
 @router.get("", response_model=list[BotOut])
 def list_bots(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     bots = db.query(Bot).filter(Bot.organization_id == user.organization_id).all()
-    pkg, _sub = _org_package(db, user.organization_id)
-    return [_bot_out(b, pkg) for b in bots]
+    return [_bot_out(b) for b in bots]
 
 
 @router.post("", response_model=BotOut, status_code=201)
@@ -89,7 +88,7 @@ def create_bot(payload: BotCreate, db: Session = Depends(get_db), user: User = D
     db.add(bot)
     db.commit()
     db.refresh(bot)
-    return _bot_out(bot, pkg)
+    return _bot_out(bot)
 
 
 def _message_out(db: Session, m: Message) -> ConversationMessageOut:
@@ -130,8 +129,7 @@ def update_bot(
         setattr(bot, field, value)
     db.commit()
     db.refresh(bot)
-    pkg, _sub = _org_package(db, user.organization_id)
-    return _bot_out(bot, pkg)
+    return _bot_out(bot)
 
 
 @router.post("/{bot_id}/chat", response_model=ChatResponse)

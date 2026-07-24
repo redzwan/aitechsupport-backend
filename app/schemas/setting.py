@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 
 
 class SettingsUpdate(BaseModel):
@@ -23,3 +23,30 @@ class ModelOption(BaseModel):
     id: str
     label: str
     provider: str
+
+
+class FallbackTier(BaseModel):
+    """One rung of the platform-wide chat fallback chain, tried in order until
+    one answers successfully. Replaces per-bot/per-package model choice."""
+    label: str
+    provider: str  # "self_hosted" | "openrouter"
+    base_url: str | None = None  # required for self_hosted; ignored for openrouter
+    model: str
+
+    @model_validator(mode="after")
+    def _validate(self) -> "FallbackTier":
+        if self.provider not in ("self_hosted", "openrouter"):
+            raise ValueError("provider must be 'self_hosted' or 'openrouter'")
+        if self.provider == "self_hosted" and not (self.base_url or "").strip():
+            raise ValueError(f"base_url is required for self-hosted tier '{self.label}'")
+        if not self.model.strip():
+            raise ValueError(f"model is required for tier '{self.label}'")
+        return self
+
+
+class FallbackChainOut(BaseModel):
+    tiers: list[FallbackTier]
+
+
+class FallbackChainUpdate(BaseModel):
+    tiers: list[FallbackTier]
