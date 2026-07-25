@@ -271,10 +271,11 @@ def connect_whatsapp(bot_id: int, db: Session = Depends(get_db), user: User = De
     if ch.connection_status == "connected":
         return WhatsAppConnectOut(connection_status=ch.connection_status, qr_base64=None)
 
+    device_name = f"bot-{bot.id}"
     if not ch.access_token:
         device_number = whatsapp.gen_device_placeholder(ch.id)
         try:
-            created = fonnte.add_device(name=f"bot-{bot.id}", device_number=device_number)
+            created = fonnte.add_device(name=device_name, device_number=device_number)
         except fonnte.FonnteError as e:
             raise HTTPException(status_code=502, detail=f"Could not create WhatsApp device: {e}")
         ch.phone_number_id = device_number
@@ -282,11 +283,15 @@ def connect_whatsapp(bot_id: int, db: Session = Depends(get_db), user: User = De
         db.commit()
         db.refresh(ch)
 
-        webhook_url, webhook_connect_url = _whatsapp_webhook_urls(ch)
-        try:
-            fonnte.update_device(crypto.decrypt(ch.access_token), webhook_url, webhook_connect_url)
-        except fonnte.FonnteError as e:
-            raise HTTPException(status_code=502, detail=f"Could not configure WhatsApp webhooks: {e}")
+    # Reassert the webhook config every time (idempotent, cheap) rather than only
+    # at first provisioning — otherwise a channel whose one-shot config attempt
+    # failed (e.g. a transient error) stays permanently unwired with no retry path.
+    webhook_url, webhook_connect_url = _whatsapp_webhook_urls(ch)
+    try:
+        fonnte.update_device(crypto.decrypt(ch.access_token), device_name, ch.phone_number_id,
+                             webhook_url, webhook_connect_url)
+    except fonnte.FonnteError as e:
+        raise HTTPException(status_code=502, detail=f"Could not configure WhatsApp webhooks: {e}")
 
     try:
         qr = fonnte.get_qr(crypto.decrypt(ch.access_token))

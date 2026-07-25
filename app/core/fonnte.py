@@ -47,10 +47,15 @@ def add_device(name: str, device_number: str) -> dict:
     return _post("/add-device", _account_token(), {"name": name, "device": device_number})
 
 
-def update_device(device_token: str, webhook_url: str, webhook_connect_url: str) -> dict:
+def update_device(device_token: str, name: str, device_number: str,
+                  webhook_url: str, webhook_connect_url: str) -> dict:
     """Point this device's inbound-message and connect/disconnect webhooks at us,
-    and enable autoread (required for the message webhook to fire per Fonnte docs)."""
+    and enable autoread (required for the message webhook to fire per Fonnte docs).
+    name/device are REQUIRED on every update call, not just at creation — Fonnte
+    rejects the call with a generic "input invalid" if they're omitted."""
     return _post("/update-device", device_token, {
+        "name": name,
+        "device": device_number,
         "webhook": webhook_url,
         "webhookconnect": webhook_connect_url,
         "autoread": True,
