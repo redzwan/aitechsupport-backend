@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 
 from app.db.session import get_db, SessionLocal
 from app.core import (
-    rag, embeddings, llm, billing, widget, limits, email, config_store, storage,
+    rag, embeddings, llm, billing, widget, whatsapp, limits, email, config_store, storage,
     attachments, models_catalog, handoff,
 )
 from app.core.events import bus, conv_topic, org_topic
@@ -212,6 +212,34 @@ def widget_config(public_key: str, db: Session = Depends(get_db)):
     # Appearance only supplies the look; handoff_mode comes from the bot.
     fields = {k: ap[k] for k in WidgetPublicConfig.model_fields if k in ap}
     return WidgetPublicConfig(**fields, handoff_mode=handoff.effective_mode(bot))
+
+
+@router.get("/widget/{public_key}/whatsapp-redirect", response_model=WhatsAppLinkResponse)
+def widget_whatsapp_redirect(public_key: str, request: Request, db: Session = Depends(get_db)):
+    """If this bot's Fonnte WhatsApp is connected AND a number is set, the AI
+    answers customers directly on WhatsApp — the widget launcher redirects
+    there instead of opening the in-page chatbox. Independent of handoff_mode
+    (that escalates an EXISTING bot conversation to a human; this decides the
+    primary channel before any conversation starts). Fetched once on load
+    (not on click) for the same reason as widget_whatsapp_link: opening a
+    window after an await is blocked by iOS Safari.
+    """
+    resolved = widget.resolve_widget(db, public_key)
+    if resolved is None:
+        raise HTTPException(status_code=404, detail="Widget not found")
+    channel, bot = resolved
+    ip = _client_ip(request)
+    if not limits.rate_limit_ok(f"{public_key}:{ip}:wa-redirect", settings.WIDGET_RATE_PER_MIN, 60):
+        raise HTTPException(status_code=429, detail="Too many requests. Please slow down.",
+                            headers={"Retry-After": "60"})
+
+    wa_channel = whatsapp.get_whatsapp_channel(db, bot)
+    if wa_channel is None or wa_channel.connection_status != "connected":
+        return WhatsAppLinkResponse(enabled=False)
+    number = handoff.normalize_wa_number(bot.whatsapp_number)
+    if not number:
+        return WhatsAppLinkResponse(enabled=False)
+    return WhatsAppLinkResponse(enabled=True, url=handoff.build_link(number, "Hi! I'd like to ask something."))
 
 
 def _resolve_and_ratelimit(public_key: str, request: Request, db: Session):
