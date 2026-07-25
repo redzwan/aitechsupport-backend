@@ -78,7 +78,13 @@ def get_qr(device_token: str) -> dict:
 
 
 def send_message(device_token: str, target: str, message: str) -> dict:
-    return _post("/send", device_token, {"target": target, "message": message})
+    # countryCode="0" disables Fonnte's auto-prefixing — without it, Fonnte
+    # prepends its default "62" (Indonesia) onto a target that's already fully
+    # normalized (see handoff.normalize_wa_number), corrupting the number (e.g.
+    # a Malaysian 60178366950 becomes 6260178366950). Confirmed live: the AI
+    # answered and the send call reported success, but the reply silently never
+    # arrived because Fonnte queued it against the mangled number.
+    return _post("/send", device_token, {"target": target, "message": message, "countryCode": "0"})
 
 
 def disconnect_device(device_token: str) -> dict:
