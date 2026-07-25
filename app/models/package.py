@@ -22,6 +22,10 @@ class Package(Base):
     is_active = Column(Boolean, default=True, nullable=False)
     sort_order = Column(Integer, default=0, nullable=False)
 
+    # Whether a bot on this package can connect WhatsApp (Fonnte) at all —
+    # gates the /whatsapp/connect flow, not just the model used to answer.
+    whatsapp_enabled = Column(Boolean, default=True, nullable=False)
+
     # Ordered chat fallback chain for bots on this package: a list of
     # {label, provider, base_url, model} tried top to bottom until one answers
     # (see models_catalog.resolve_candidates). NULL -> inherit the platform-wide

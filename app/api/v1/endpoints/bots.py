@@ -243,22 +243,28 @@ def _whatsapp_webhook_urls(channel: Channel) -> tuple[str, str]:
     return f"{base}/message", f"{base}/status"
 
 
-def _whatsapp_status_out(ch: Channel) -> WhatsAppStatusOut:
-    return WhatsAppStatusOut(connection_status=ch.connection_status, is_active=bool(ch.is_active))
+def _whatsapp_status_out(ch: Channel, pkg) -> WhatsAppStatusOut:
+    return WhatsAppStatusOut(
+        connection_status=ch.connection_status,
+        is_active=bool(ch.is_active),
+        plan_allows_whatsapp=bool(pkg.whatsapp_enabled) if pkg is not None else True,
+    )
 
 
 @router.get("/{bot_id}/whatsapp", response_model=WhatsAppStatusOut)
 def get_whatsapp(bot_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     """WhatsApp connection status for this bot (find-or-creates an unlinked channel)."""
     bot = _get_owned_bot(bot_id, db, user)
-    return _whatsapp_status_out(whatsapp.get_or_create_whatsapp_channel(db, bot))
+    pkg, _sub = _org_package(db, user.organization_id)
+    return _whatsapp_status_out(whatsapp.get_or_create_whatsapp_channel(db, bot), pkg)
 
 
 @router.get("/{bot_id}/whatsapp/status", response_model=WhatsAppStatusOut)
 def whatsapp_status(bot_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     """Cheap poll target for the frontend while a QR is displayed."""
     bot = _get_owned_bot(bot_id, db, user)
-    return _whatsapp_status_out(whatsapp.get_or_create_whatsapp_channel(db, bot))
+    pkg, _sub = _org_package(db, user.organization_id)
+    return _whatsapp_status_out(whatsapp.get_or_create_whatsapp_channel(db, bot), pkg)
 
 
 @router.post("/{bot_id}/whatsapp/connect", response_model=WhatsAppConnectOut)
@@ -266,6 +272,12 @@ def connect_whatsapp(bot_id: int, db: Session = Depends(get_db), user: User = De
     """Provision (if needed) this bot's Fonnte device and return a QR to scan.
     Safe to call again while pending — re-fetches the QR for the same device."""
     bot = _get_owned_bot(bot_id, db, user)
+    pkg, _sub = _org_package(db, user.organization_id)
+    if pkg is not None and not pkg.whatsapp_enabled:
+        raise HTTPException(
+            status_code=402,
+            detail=f"WhatsApp isn't available on your {pkg.name} plan. Upgrade to connect a number.",
+        )
     ch = whatsapp.get_or_create_whatsapp_channel(db, bot)
 
     if ch.connection_status == "connected":
@@ -321,7 +333,8 @@ def disconnect_whatsapp(bot_id: int, db: Session = Depends(get_db), user: User =
     ch.is_active = False
     db.commit()
     db.refresh(ch)
-    return _whatsapp_status_out(ch)
+    pkg, _sub = _org_package(db, user.organization_id)
+    return _whatsapp_status_out(ch, pkg)
 
 
 # ===== Conversation inbox (JWT, org + bot scoped) =====

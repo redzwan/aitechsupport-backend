@@ -13,6 +13,8 @@ class PackageOut(BaseModel):
     features: list[str] = []
     is_active: bool
     sort_order: int
+    # Whether a bot on this plan can connect WhatsApp (Fonnte) at all.
+    whatsapp_enabled: bool = True
     # Ordered chat fallback chain for this plan; null -> inherit the
     # platform-wide chain (see models_catalog.chain_for_package).
     fallback_chain: list[FallbackTier] | None = None
@@ -30,6 +32,7 @@ class PackageUpsert(BaseModel):
     features: list[str] = []
     is_active: bool = True
     sort_order: int = 0
+    whatsapp_enabled: bool = True
     fallback_chain: list[FallbackTier] | None = None
 
 
