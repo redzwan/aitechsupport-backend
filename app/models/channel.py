@@ -23,10 +23,25 @@ class Channel(Base):
     # whatsapp | widget (telegram later)
     kind = Column(String, default="whatsapp", nullable=False)
 
-    # WhatsApp-specific
+    # WhatsApp-specific (Fonnte gateway — see app/core/fonnte.py)
+    # waba_id unused for Fonnte (no WABA concept); kept for a possible future
+    # Meta-direct provider.
     waba_id = Column(String, nullable=True)
-    phone_number_id = Column(String, index=True, nullable=True)  # inbound webhook routes on this
-    access_token = Column(String, nullable=True)  # TODO: encrypt at rest before prod
+    # Fonnte's device identifier — an arbitrary unique string assigned at
+    # creation, NOT necessarily the real linked WhatsApp number. Inbound webhook
+    # routing does NOT depend on this (see webhook_secret below); it's here for
+    # reference/display only.
+    phone_number_id = Column(String, index=True, nullable=True)
+    # Fonnte DEVICE token (not the platform account token), Fernet-encrypted at
+    # rest — see app/core/crypto.py. Decrypt only at the point of use.
+    access_token = Column(String, nullable=True)
+
+    # disconnected | pending_qr | connected — distinct from is_active (admin on/off).
+    connection_status = Column(String, default="disconnected", nullable=False)
+    # Random token embedded in this channel's webhook URL path. Fonnte doesn't
+    # sign webhook payloads, so routing/auth for inbound webhooks is entirely
+    # URL-based: /public/whatsapp/fonnte/{channel_id}/{webhook_secret}/...
+    webhook_secret = Column(String, nullable=True)
 
     # Website-widget-specific (kind='widget')
     # Public embed key — a selector in the tenant's page HTML, NOT a secret.

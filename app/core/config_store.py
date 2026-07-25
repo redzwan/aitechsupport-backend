@@ -47,6 +47,11 @@ MANAGED_KEYS = {
     # Google Search Console (admin SEO panel)
     "GSC_SITE_URL": "GSC_SITE_URL",                       # e.g. sc-domain:aitechsupport.my
     "GSC_SERVICE_ACCOUNT_JSON": "GSC_SERVICE_ACCOUNT_JSON",  # service-account key JSON
+    # WhatsApp (Fonnte gateway) — one platform-owned account provisions a device
+    # per client bot; see app/core/fonnte.py.
+    "FONNTE_ACCOUNT_TOKEN": "FONNTE_ACCOUNT_TOKEN",
+    # Field-level encryption key for Channel.access_token — see app/core/crypto.py.
+    "FIELD_ENCRYPTION_KEY": "FIELD_ENCRYPTION_KEY",
 }
 
 # Keys whose value must never be returned to the client in full.
@@ -58,6 +63,8 @@ SECRET_KEYS = {
     "BILLPLZ_API_KEY",
     "BILLPLZ_X_SIGNATURE_KEY",
     "GSC_SERVICE_ACCOUNT_JSON",
+    "FONNTE_ACCOUNT_TOKEN",
+    "FIELD_ENCRYPTION_KEY",
 }
 
 

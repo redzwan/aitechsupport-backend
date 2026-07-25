@@ -11,7 +11,10 @@ from sqlalchemy.orm import Session
 
 from app.db.session import get_db
 from app.api.deps import get_current_user, get_agent_user
-from app.core import rag, embeddings, llm, models_catalog, billing, widget, analytics, attachments, storage
+from app.core import (
+    rag, embeddings, llm, models_catalog, billing, widget, whatsapp, fonnte, crypto,
+    analytics, attachments, storage,
+)
 from app.core.events import bus, conv_topic, org_topic, user_topic
 from app.core.settings import settings
 from app.models.user import User
@@ -21,6 +24,7 @@ from app.models.conversation import Conversation, Message
 from app.models.blocked_visitor import BlockedVisitor
 from app.schemas.bot import BotCreate, BotOut, BotUpdate, ChatRequest, ChatResponse
 from app.schemas.setting import ModelOption
+from app.schemas.whatsapp import WhatsAppStatusOut, WhatsAppConnectOut
 from app.schemas.widget import (
     WidgetConfigOut,
     WidgetConfigUpdate,
@@ -230,6 +234,89 @@ def rotate_widget_key(bot_id: int, db: Session = Depends(get_db), user: User = D
     db.commit()
     db.refresh(ch)
     return _widget_out(ch)
+
+
+# ===== WhatsApp (Fonnte, JWT, org-scoped) =====
+
+def _whatsapp_webhook_urls(channel: Channel) -> tuple[str, str]:
+    base = f"{settings.API_BASE_URL}{settings.API_V1_STR}/webhooks/whatsapp/fonnte/{channel.id}/{channel.webhook_secret}"
+    return f"{base}/message", f"{base}/status"
+
+
+def _whatsapp_status_out(ch: Channel) -> WhatsAppStatusOut:
+    return WhatsAppStatusOut(connection_status=ch.connection_status, is_active=bool(ch.is_active))
+
+
+@router.get("/{bot_id}/whatsapp", response_model=WhatsAppStatusOut)
+def get_whatsapp(bot_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """WhatsApp connection status for this bot (find-or-creates an unlinked channel)."""
+    bot = _get_owned_bot(bot_id, db, user)
+    return _whatsapp_status_out(whatsapp.get_or_create_whatsapp_channel(db, bot))
+
+
+@router.get("/{bot_id}/whatsapp/status", response_model=WhatsAppStatusOut)
+def whatsapp_status(bot_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """Cheap poll target for the frontend while a QR is displayed."""
+    bot = _get_owned_bot(bot_id, db, user)
+    return _whatsapp_status_out(whatsapp.get_or_create_whatsapp_channel(db, bot))
+
+
+@router.post("/{bot_id}/whatsapp/connect", response_model=WhatsAppConnectOut)
+def connect_whatsapp(bot_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """Provision (if needed) this bot's Fonnte device and return a QR to scan.
+    Safe to call again while pending — re-fetches the QR for the same device."""
+    bot = _get_owned_bot(bot_id, db, user)
+    ch = whatsapp.get_or_create_whatsapp_channel(db, bot)
+
+    if ch.connection_status == "connected":
+        return WhatsAppConnectOut(connection_status=ch.connection_status, qr_base64=None)
+
+    if not ch.access_token:
+        device_number = whatsapp.gen_device_placeholder(ch.id)
+        try:
+            created = fonnte.add_device(name=f"bot-{bot.id}", device_number=device_number)
+        except fonnte.FonnteError as e:
+            raise HTTPException(status_code=502, detail=f"Could not create WhatsApp device: {e}")
+        ch.phone_number_id = device_number
+        ch.access_token = crypto.encrypt(created["token"])
+        db.commit()
+        db.refresh(ch)
+
+        webhook_url, webhook_connect_url = _whatsapp_webhook_urls(ch)
+        try:
+            fonnte.update_device(crypto.decrypt(ch.access_token), webhook_url, webhook_connect_url)
+        except fonnte.FonnteError as e:
+            raise HTTPException(status_code=502, detail=f"Could not configure WhatsApp webhooks: {e}")
+
+    try:
+        qr = fonnte.get_qr(crypto.decrypt(ch.access_token))
+    except fonnte.AlreadyConnected:
+        ch.connection_status = "connected"
+        ch.is_active = True
+        db.commit()
+        return WhatsAppConnectOut(connection_status="connected", qr_base64=None)
+    except fonnte.FonnteError as e:
+        raise HTTPException(status_code=502, detail=f"Could not fetch WhatsApp QR: {e}")
+
+    ch.connection_status = "pending_qr"
+    db.commit()
+    return WhatsAppConnectOut(connection_status="pending_qr", qr_base64=qr.get("url"))
+
+
+@router.post("/{bot_id}/whatsapp/disconnect", response_model=WhatsAppStatusOut)
+def disconnect_whatsapp(bot_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    bot = _get_owned_bot(bot_id, db, user)
+    ch = whatsapp.get_or_create_whatsapp_channel(db, bot)
+    if ch.access_token:
+        try:
+            fonnte.disconnect_device(crypto.decrypt(ch.access_token))
+        except fonnte.FonnteError as e:
+            raise HTTPException(status_code=502, detail=f"Could not disconnect WhatsApp: {e}")
+    ch.connection_status = "disconnected"
+    ch.is_active = False
+    db.commit()
+    db.refresh(ch)
+    return _whatsapp_status_out(ch)
 
 
 # ===== Conversation inbox (JWT, org + bot scoped) =====
@@ -526,7 +613,25 @@ def reply_conversation(
                  "message": {"id": msg.id, "role": "agent", "content": msg.content,
                              "sender_name": agent_name, "image_url": out.image_url}})
     bus.publish(org_topic(conv.organization_id), {"type": "ping", "conv_id": conv.id})
+    _deliver_to_whatsapp_if_applicable(db, conv, payload.content)
     return out
+
+
+def _deliver_to_whatsapp_if_applicable(db: Session, conv: Conversation, content: str) -> None:
+    """If this conversation is on a WhatsApp channel, actually send the agent's
+    reply to the customer's phone — otherwise it only ever lands in our own DB.
+    Text only for now (image attachments aren't forwarded to WhatsApp yet)."""
+    if not conv.channel_id or not content.strip():
+        return
+    channel = db.query(Channel).filter(
+        Channel.id == conv.channel_id, Channel.kind == whatsapp.WHATSAPP_KIND,
+    ).first()
+    if channel is None or not channel.access_token:
+        return
+    try:
+        fonnte.send_message(crypto.decrypt(channel.access_token), conv.external_user_id, content)
+    except Exception:  # noqa: BLE001 — reply already saved; delivery failure shouldn't 500 the request
+        logger.exception("fonnte send failed for conversation %s", conv.id)
 
 
 @router.post("/{bot_id}/conversations/{conv_id}/release", response_model=ConversationOut)

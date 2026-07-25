@@ -56,6 +56,7 @@ def get_settings(db: Session = Depends(get_db), admin: User = Depends(get_platfo
     """Current platform config. Secrets are never returned in full — only set/hint."""
     ork = config_store.get("OPENROUTER_API_KEY")
     voy = config_store.get("VOYAGE_API_KEY")
+    fonnte_tok = config_store.get("FONNTE_ACCOUNT_TOKEN")
     return SettingsOut(
         openrouter_api_key_set=bool(ork),
         openrouter_api_key_hint=_hint(ork),
@@ -63,6 +64,9 @@ def get_settings(db: Session = Depends(get_db), admin: User = Depends(get_platfo
         voyage_api_key_hint=_hint(voy),
         openrouter_base_url=config_store.get("OPENROUTER_BASE_URL") or "https://openrouter.ai/api/v1",
         default_chat_model=models_catalog.default_model(),
+        fonnte_account_token_set=bool(fonnte_tok),
+        fonnte_account_token_hint=_hint(fonnte_tok),
+        field_encryption_key_set=bool(config_store.get("FIELD_ENCRYPTION_KEY")),
     )
 
 
@@ -78,6 +82,8 @@ def update_settings(
         "voyage_api_key": "VOYAGE_API_KEY",
         "openrouter_base_url": "OPENROUTER_BASE_URL",
         "default_chat_model": "DEFAULT_CHAT_MODEL",
+        "fonnte_account_token": "FONNTE_ACCOUNT_TOKEN",
+        "field_encryption_key": "FIELD_ENCRYPTION_KEY",
     }
     updates: dict[str, str] = {}
     for field, key in field_to_key.items():

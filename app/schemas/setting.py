@@ -7,6 +7,8 @@ class SettingsUpdate(BaseModel):
     voyage_api_key: str | None = None
     openrouter_base_url: str | None = None
     default_chat_model: str | None = None
+    fonnte_account_token: str | None = None
+    field_encryption_key: str | None = None
 
 
 class SettingsOut(BaseModel):
@@ -17,6 +19,9 @@ class SettingsOut(BaseModel):
     voyage_api_key_hint: str | None = None
     openrouter_base_url: str
     default_chat_model: str
+    fonnte_account_token_set: bool
+    fonnte_account_token_hint: str | None = None
+    field_encryption_key_set: bool
 
 
 class ModelOption(BaseModel):
