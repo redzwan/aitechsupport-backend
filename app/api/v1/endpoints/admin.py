@@ -673,7 +673,7 @@ def _bank_transfer_out(db: Session) -> BankTransferSettingsOut:
     qr_url = None
     if cfg["qr_object_key"] and storage.is_configured(db):
         try:
-            qr_url = storage.inline_image_url(db, cfg["qr_object_key"], "image/png")
+            qr_url = storage.inline_image_url(db, cfg["qr_object_key"], billing.qr_mime_from_key(cfg["qr_object_key"]))
         except Exception:
             qr_url = None
     return BankTransferSettingsOut(

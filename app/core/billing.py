@@ -316,6 +316,16 @@ def bank_transfer_is_configured(db: Session | None = None) -> bool:
     return cfg["enabled"] and bool(cfg["account_name"]) and bool(cfg["account_number"])
 
 
+_QR_MIME_BY_EXT = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png", "webp": "image/webp", "gif": "image/gif"}
+
+
+def qr_mime_from_key(object_key: str) -> str:
+    """Infer content-type from the stored QR object's extension (see admin QR
+    upload, which names the file after the sniffed mime). Falls back to PNG."""
+    ext = object_key.rsplit(".", 1)[-1].lower() if "." in object_key else ""
+    return _QR_MIME_BY_EXT.get(ext, "image/png")
+
+
 def report_bank_transfer(
     db: Session,
     *,
