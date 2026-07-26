@@ -23,6 +23,7 @@ from app.core.settings import settings
 from app.models.subscription import Subscription
 from app.models.package import Package
 from app.models.payment import Payment
+from app.models.channel import Channel
 
 logger = logging.getLogger(__name__)
 
@@ -291,3 +292,131 @@ def process_billplz_webhook(db: Session, data: dict) -> str:
     db.commit()
     logger.info("activated plan %s for org %s (bill %s)", package.slug, payment.organization_id, bill_id)
     return "activated"
+
+
+# ===== Bank transfer fallback (manual, admin-confirmed) =====
+
+def bank_transfer_config(db: Session | None = None) -> dict:
+    """Resolve manual bank-transfer config (DB settings, no env fallback — this
+    is platform-owner personal bank info, never bootstrapped from .env)."""
+    g = config_store.get
+    return {
+        "enabled": _as_bool(g("BANK_TRANSFER_ENABLED"), False),
+        "bank_name": g("BANK_NAME"),
+        "account_name": g("BANK_ACCOUNT_NAME"),
+        "account_number": g("BANK_ACCOUNT_NUMBER"),
+        "qr_object_key": g("BANK_QR_OBJECT_KEY"),
+        "notify_channel_id": g("BANK_NOTIFY_CHANNEL_ID"),
+        "notify_whatsapp_number": g("BANK_NOTIFY_WHATSAPP_NUMBER"),
+    }
+
+
+def bank_transfer_is_configured(db: Session | None = None) -> bool:
+    cfg = bank_transfer_config(db)
+    return cfg["enabled"] and bool(cfg["account_name"]) and bool(cfg["account_number"])
+
+
+def report_bank_transfer(
+    db: Session,
+    *,
+    organization_id: int,
+    package: Package,
+    note: str,
+) -> Payment:
+    """Record a pending bank-transfer payment for an admin to confirm later.
+
+    There's no gateway here, so the Payment starts (and stays) `pending` until a
+    platform admin verifies the transfer against `note` and calls
+    `confirm_bank_transfer`.
+    """
+    if not bank_transfer_is_configured(db):
+        raise RuntimeError("Bank transfer is not configured")
+    payment = Payment(
+        organization_id=organization_id,
+        plan_slug=package.slug,
+        amount_cents=int(package.price_myr) * 100,
+        method="bank_transfer",
+        status="pending",
+        sandbox=False,
+        reference_note=note or None,
+        reported_at=datetime.utcnow(),
+    )
+    db.add(payment)
+    db.commit()
+    db.refresh(payment)
+    logger.info("bank transfer reported for org %s plan %s", organization_id, package.slug)
+    return payment
+
+
+def notify_admin_bank_transfer(db: Session, payment: Payment, org_name: str) -> None:
+    """Best-effort WhatsApp ping to the platform admin via the configured device.
+    Never raises — a missing/broken device shouldn't block the customer's report."""
+    from app.core import fonnte, crypto  # local import: avoid a hard dep for callers that don't need it
+
+    cfg = bank_transfer_config(db)
+    channel_id = cfg["notify_channel_id"]
+    target = cfg["notify_whatsapp_number"]
+    if not channel_id or not target:
+        return
+    channel = db.query(Channel).filter(Channel.id == int(channel_id)).first()
+    if not channel or not channel.access_token:
+        logger.warning("bank transfer notify: channel %s not found/unlinked", channel_id)
+        return
+    message = (
+        f"New bank transfer reported.\n"
+        f"Client: {org_name}\n"
+        f"Plan: {payment.plan_slug}\n"
+        f"Amount: RM{payment.amount_cents / 100:.2f}\n"
+        f"Note: {payment.reference_note or '(none)'}\n"
+        f"Confirm in the admin Payments page."
+    )
+    try:
+        fonnte.send_message(crypto.decrypt(channel.access_token), target, message)
+    except Exception:  # noqa: BLE001
+        logger.exception("failed to send bank transfer WhatsApp notification")
+
+
+def set_billing_cycle(db: Session, organization_id: int, start_date: datetime) -> Subscription:
+    """Admin sets/updates the subscription's monthly renewal anchor."""
+    sub = get_or_create_subscription(db, organization_id)
+    sub.start_date = start_date
+    sub.next_billing_date = start_date + timedelta(days=PERIOD_DAYS)
+    db.commit()
+    db.refresh(sub)
+    return sub
+
+
+def confirm_bank_transfer(db: Session, payment: Payment) -> Subscription:
+    """Admin confirms a reported bank transfer: activate the plan and roll the
+    renewal date forward a month from today."""
+    if payment.status == "paid":
+        raise ValueError("Payment already confirmed")
+    package = package_for(db, payment.plan_slug)
+    if package is None:
+        raise ValueError(f"Unknown package '{payment.plan_slug}'")
+    sub = subscribe(db, payment.organization_id, package)
+    now = datetime.utcnow()
+    sub.start_date = sub.start_date or now
+    sub.next_billing_date = now + timedelta(days=PERIOD_DAYS)
+    payment.status = "paid"
+    payment.paid_at = now
+    db.commit()
+    db.refresh(sub)
+    return sub
+
+
+def subscriptions_due_for_reminder(db: Session, within_days: int = 3) -> list[Subscription]:
+    """Active paid subscriptions whose renewal is within `within_days` and that
+    haven't been reminded since their current `next_billing_date` was set."""
+    cutoff = datetime.utcnow() + timedelta(days=within_days)
+    return (
+        db.query(Subscription)
+        .filter(
+            Subscription.next_billing_date.isnot(None),
+            Subscription.next_billing_date <= cutoff,
+            Subscription.plan != DEFAULT_PLAN,
+            (Subscription.last_reminder_sent.is_(None))
+            | (Subscription.last_reminder_sent < Subscription.next_billing_date - timedelta(days=PERIOD_DAYS)),
+        )
+        .all()
+    )

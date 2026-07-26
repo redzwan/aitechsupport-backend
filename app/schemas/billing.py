@@ -45,6 +45,7 @@ class SubscriptionOut(BaseModel):
     tokens_remaining: int
     max_bots: int
     period_start: str | None = None
+    next_billing_date: str | None = None
 
 
 class SubscribeRequest(BaseModel):
@@ -73,6 +74,12 @@ class ClientRow(BaseModel):
     tokens_quota: int
     bots: int
     created_at: str | None = None
+    start_date: str | None = None
+    next_billing_date: str | None = None
+
+
+class SetBillingCycleRequest(BaseModel):
+    start_date: str  # ISO date/datetime; next_billing_date = start_date + 30 days
 
 
 class PaymentRow(BaseModel):
@@ -81,9 +88,12 @@ class PaymentRow(BaseModel):
     organization_name: str | None = None
     plan_slug: str
     amount_cents: int
+    method: str
     status: str
     sandbox: bool
     billplz_bill_id: str | None = None
+    reference_note: str | None = None
+    reported_at: str | None = None
     paid_at: str | None = None
     created_at: str | None = None
 
@@ -121,3 +131,34 @@ class BillplzSettingsUpdate(BaseModel):
     api_key: str | None = None            # blank -> keep existing
     x_signature_key: str | None = None    # blank -> keep existing
     collection_id: str | None = None
+
+
+class BankTransferSettingsOut(BaseModel):
+    """Manual bank-transfer fallback config, shown to customers when enabled."""
+    enabled: bool
+    bank_name: str
+    account_name: str
+    account_number: str
+    qr_url: str | None = None  # presigned inline URL for the QR image, if uploaded
+    notify_channel_id: int | None = None
+    notify_whatsapp_number: str
+    configured: bool
+
+
+class BankTransferSettingsUpdate(BaseModel):
+    enabled: bool | None = None
+    bank_name: str | None = None
+    account_name: str | None = None
+    account_number: str | None = None
+    notify_channel_id: int | None = None
+    notify_whatsapp_number: str | None = None
+
+
+class BankTransferReportRequest(BaseModel):
+    package_slug: str
+    note: str = ""
+
+
+class BankTransferReportOut(BaseModel):
+    payment_id: int
+    status: str

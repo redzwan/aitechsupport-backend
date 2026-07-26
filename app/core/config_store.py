@@ -44,6 +44,14 @@ MANAGED_KEYS = {
     "BILLPLZ_COLLECTION_ID": "BILLPLZ_COLLECTION_ID",
     "BILLPLZ_SANDBOX": "BILLPLZ_SANDBOX",       # "true" | "false" (test vs live)
     "BILLING_ENABLED": "BILLING_ENABLED",       # "true" | "false" (payment kill-switch)
+    # Manual bank-transfer fallback (Malaysian bank account, shown alongside Billplz)
+    "BANK_TRANSFER_ENABLED": "BANK_TRANSFER_ENABLED",  # "true" | "false"
+    "BANK_NAME": "BANK_NAME",
+    "BANK_ACCOUNT_NAME": "BANK_ACCOUNT_NAME",
+    "BANK_ACCOUNT_NUMBER": "BANK_ACCOUNT_NUMBER",
+    "BANK_QR_OBJECT_KEY": "BANK_QR_OBJECT_KEY",         # storage object key for the QR image
+    "BANK_NOTIFY_CHANNEL_ID": "BANK_NOTIFY_CHANNEL_ID", # Channel.id whose WhatsApp device sends admin alerts
+    "BANK_NOTIFY_WHATSAPP_NUMBER": "BANK_NOTIFY_WHATSAPP_NUMBER",  # admin's number to receive them
     # Google Search Console (admin SEO panel)
     "GSC_SITE_URL": "GSC_SITE_URL",                       # e.g. sc-domain:aitechsupport.my
     "GSC_SERVICE_ACCOUNT_JSON": "GSC_SERVICE_ACCOUNT_JSON",  # service-account key JSON

@@ -1,14 +1,16 @@
 import json
 import re
+from datetime import datetime
 from urllib.parse import urlparse
 
-from fastapi import APIRouter, Depends, Form, HTTPException, Query
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
 from app.api.deps import get_platform_admin
 from app.core import config_store, models_catalog, billing, email as email_service, storage, cms, gsc_service
+from app.core.settings import settings
 from app.models.user import User
 from app.models.organization import Organization
 from app.models.bot import Bot
@@ -17,6 +19,8 @@ from app.models.package import Package
 from app.models.payment import Payment
 from app.models.email_template import EmailTemplate
 from app.models.page import Page
+from app.models.channel import Channel
+from app.core import attachments
 from app.schemas.content import HomepageUpdate, PageAdminOut, PageCreate, PageUpdate
 from app.schemas.setting import SettingsUpdate, SettingsOut, FallbackChainOut, FallbackChainUpdate
 from app.schemas.site_widget import SiteWidgetOut, SiteWidgetUpdate
@@ -31,6 +35,9 @@ from app.schemas.billing import (
     PaymentRow,
     PaymentsSummary,
     PaymentsOut,
+    SetBillingCycleRequest,
+    BankTransferSettingsOut,
+    BankTransferSettingsUpdate,
 )
 from app.schemas.email import (
     SMTPSettingsOut,
@@ -331,6 +338,8 @@ def list_clients(db: Session = Depends(get_db), admin: User = Depends(get_platfo
                 tokens_quota=quotas.get(plan, 0),
                 bots=bot_counts.get(org.id, 0),
                 created_at=org.created_at.isoformat() if org.created_at else None,
+                start_date=sub.start_date.isoformat() if sub and sub.start_date else None,
+                next_billing_date=sub.next_billing_date.isoformat() if sub and sub.next_billing_date else None,
             )
         )
     return rows
@@ -362,7 +371,103 @@ def set_client_plan(
         tokens_quota=pkg.monthly_token_quota,
         bots=bots,
         created_at=org.created_at.isoformat() if org.created_at else None,
+        start_date=sub.start_date.isoformat() if sub.start_date else None,
+        next_billing_date=sub.next_billing_date.isoformat() if sub.next_billing_date else None,
     )
+
+
+@router.put("/clients/{organization_id}/billing-date", response_model=ClientRow)
+def set_client_billing_date(
+    organization_id: int,
+    payload: SetBillingCycleRequest,
+    db: Session = Depends(get_db),
+    admin: User = Depends(get_platform_admin),
+):
+    """Operator sets/updates when this client's monthly renewal falls due."""
+    org = db.query(Organization).filter(Organization.id == organization_id).first()
+    if not org:
+        raise HTTPException(status_code=404, detail="Client not found")
+    try:
+        start = datetime.fromisoformat(payload.start_date)
+    except ValueError:
+        raise HTTPException(status_code=422, detail="start_date must be an ISO date/datetime")
+    sub = billing.set_billing_cycle(db, organization_id, start)
+    owner = db.query(User).filter(User.organization_id == organization_id, User.role == "owner").first()
+    bots = db.query(func.count(Bot.id)).filter(Bot.organization_id == organization_id).scalar() or 0
+    quota = db.query(Package).filter(Package.slug == sub.plan).first()
+    return ClientRow(
+        organization_id=org.id,
+        organization_name=org.name,
+        owner_email=owner.email if owner else None,
+        plan=sub.plan,
+        tokens_used=sub.tokens_used or 0,
+        tokens_quota=quota.monthly_token_quota if quota else 0,
+        bots=bots,
+        created_at=org.created_at.isoformat() if org.created_at else None,
+        start_date=sub.start_date.isoformat() if sub.start_date else None,
+        next_billing_date=sub.next_billing_date.isoformat() if sub.next_billing_date else None,
+    )
+
+
+@router.post("/clients/{organization_id}/send-reminder", status_code=204)
+def send_billing_reminder(
+    organization_id: int,
+    db: Session = Depends(get_db),
+    admin: User = Depends(get_platform_admin),
+):
+    """Operator manually sends this client's renewal-reminder email now."""
+    org = db.query(Organization).filter(Organization.id == organization_id).first()
+    if not org:
+        raise HTTPException(status_code=404, detail="Client not found")
+    sub = db.query(Subscription).filter(Subscription.organization_id == organization_id).first()
+    if not sub or not sub.next_billing_date:
+        raise HTTPException(status_code=400, detail="No renewal date set for this client yet")
+    owner = db.query(User).filter(User.organization_id == organization_id, User.role == "owner").first()
+    if not owner:
+        raise HTTPException(status_code=400, detail="This client has no owner to email")
+    pkg = billing.package_for(db, sub.plan)
+    email_service.send_template_bg(
+        owner.email,
+        "renewal_reminder",
+        {
+            "name": org.name,
+            "plan": pkg.name if pkg else sub.plan,
+            "next_billing_date": sub.next_billing_date.strftime("%d %b %Y"),
+            "dashboard_url": f"{settings.FRONTEND_URL}/dashboard/billing",
+        },
+    )
+    sub.last_reminder_sent = datetime.utcnow()
+    db.commit()
+
+
+@router.post("/billing/send-renewal-reminders")
+def send_all_renewal_reminders(db: Session = Depends(get_db), admin: User = Depends(get_platform_admin)) -> dict:
+    """Batch-send reminders to every client due for renewal within 3 days.
+
+    Safe to call repeatedly (e.g. from a daily cron hitting this endpoint) —
+    each subscription is only reminded once per renewal cycle."""
+    due = billing.subscriptions_due_for_reminder(db)
+    sent = 0
+    for sub in due:
+        org = db.query(Organization).filter(Organization.id == sub.organization_id).first()
+        owner = db.query(User).filter(User.organization_id == sub.organization_id, User.role == "owner").first()
+        if not org or not owner:
+            continue
+        pkg = billing.package_for(db, sub.plan)
+        email_service.send_template_bg(
+            owner.email,
+            "renewal_reminder",
+            {
+                "name": org.name,
+                "plan": pkg.name if pkg else sub.plan,
+                "next_billing_date": sub.next_billing_date.strftime("%d %b %Y"),
+                "dashboard_url": f"{settings.FRONTEND_URL}/dashboard/billing",
+            },
+        )
+        sub.last_reminder_sent = datetime.utcnow()
+        sent += 1
+    db.commit()
+    return {"reminders_sent": sent}
 
 
 # ===== SMTP / email settings =====
@@ -561,6 +666,93 @@ def test_billplz(db: Session = Depends(get_db), admin: User = Depends(get_platfo
         raise HTTPException(status_code=502, detail=f"Billplz check failed: {exc}")
 
 
+# ===== Bank transfer fallback payment (manual, admin-confirmed) =====
+
+def _bank_transfer_out(db: Session) -> BankTransferSettingsOut:
+    cfg = billing.bank_transfer_config(db)
+    qr_url = None
+    if cfg["qr_object_key"] and storage.is_configured(db):
+        try:
+            qr_url = storage.inline_image_url(db, cfg["qr_object_key"], "image/png")
+        except Exception:
+            qr_url = None
+    return BankTransferSettingsOut(
+        enabled=cfg["enabled"],
+        bank_name=cfg["bank_name"],
+        account_name=cfg["account_name"],
+        account_number=cfg["account_number"],
+        qr_url=qr_url,
+        notify_channel_id=int(cfg["notify_channel_id"]) if cfg["notify_channel_id"] else None,
+        notify_whatsapp_number=cfg["notify_whatsapp_number"],
+        configured=billing.bank_transfer_is_configured(db),
+    )
+
+
+@router.get("/bank-transfer", response_model=BankTransferSettingsOut)
+def get_bank_transfer(db: Session = Depends(get_db), admin: User = Depends(get_platform_admin)):
+    return _bank_transfer_out(db)
+
+
+@router.put("/bank-transfer", response_model=BankTransferSettingsOut)
+def update_bank_transfer(payload: BankTransferSettingsUpdate, db: Session = Depends(get_db), admin: User = Depends(get_platform_admin)):
+    updates: dict[str, str] = {}
+    if payload.enabled is not None:
+        updates["BANK_TRANSFER_ENABLED"] = "true" if payload.enabled else "false"
+    if payload.bank_name is not None:
+        updates["BANK_NAME"] = payload.bank_name.strip()
+    if payload.account_name is not None:
+        updates["BANK_ACCOUNT_NAME"] = payload.account_name.strip()
+    if payload.account_number is not None:
+        updates["BANK_ACCOUNT_NUMBER"] = payload.account_number.strip()
+    if payload.notify_channel_id is not None:
+        updates["BANK_NOTIFY_CHANNEL_ID"] = str(payload.notify_channel_id)
+    if payload.notify_whatsapp_number is not None:
+        updates["BANK_NOTIFY_WHATSAPP_NUMBER"] = payload.notify_whatsapp_number.strip()
+    if updates:
+        config_store.set_many(db, updates)
+    return _bank_transfer_out(db)
+
+
+@router.post("/bank-transfer/qr", response_model=BankTransferSettingsOut)
+async def upload_bank_transfer_qr(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    admin: User = Depends(get_platform_admin),
+):
+    """Upload the QR image customers scan to pay by bank transfer."""
+    if not storage.is_configured(db):
+        raise HTTPException(status_code=503, detail="Object storage isn't configured — set it up under Storage first.")
+    data = await file.read()
+    mime = attachments.sniff_image_mime(data)
+    if mime is None:
+        raise HTTPException(status_code=415, detail="Only JPEG, PNG, WebP or GIF images are supported.")
+    ext = mime.split("/")[-1]
+    key = f"platform/bank-transfer-qr.{ext}"
+    try:
+        storage.put_bytes(db, data, key, mime)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"Could not store the QR image: {exc}")
+    config_store.set_many(db, {"BANK_QR_OBJECT_KEY": key})
+    return _bank_transfer_out(db)
+
+
+@router.get("/whatsapp-channels")
+def list_whatsapp_channels(db: Session = Depends(get_db), admin: User = Depends(get_platform_admin)) -> list[dict]:
+    """Connected WhatsApp channels an admin can pick from to send bank-transfer
+    notifications — any bot's linked device can be reused for this."""
+    rows = (
+        db.query(Channel, Bot.name, Organization.name)
+        .join(Bot, Bot.id == Channel.bot_id)
+        .join(Organization, Organization.id == Channel.organization_id)
+        .filter(Channel.kind == "whatsapp", Channel.connection_status == "connected")
+        .all()
+    )
+    return [
+        {"id": ch.id, "bot_name": bot_name, "organization_name": org_name, "phone_number_id": ch.phone_number_id}
+        for ch, bot_name, org_name in rows
+    ]
+
+
 # ===== Payments (Billplz bills + status) =====
 
 @router.get("/payments", response_model=PaymentsOut)
@@ -609,15 +801,62 @@ def list_payments(
             organization_name=org_names.get(r.organization_id),
             plan_slug=r.plan_slug,
             amount_cents=r.amount_cents,
+            method=r.method,
             status=r.status,
             sandbox=r.sandbox,
             billplz_bill_id=r.billplz_bill_id,
+            reference_note=r.reference_note,
+            reported_at=r.reported_at.isoformat() if r.reported_at else None,
             paid_at=r.paid_at.isoformat() if r.paid_at else None,
             created_at=r.created_at.isoformat() if r.created_at else None,
         )
         for r in rows
     ]
     return PaymentsOut(summary=summary, payments=payments)
+
+
+@router.post("/payments/{payment_id}/confirm", response_model=PaymentRow)
+def confirm_payment(payment_id: int, db: Session = Depends(get_db), admin: User = Depends(get_platform_admin)):
+    """Operator confirms a reported bank transfer (or any other pending payment)
+    after verifying the funds arrived — activates the plan and rolls the renewal
+    date forward a month from today."""
+    payment = db.query(Payment).filter(Payment.id == payment_id).first()
+    if not payment:
+        raise HTTPException(status_code=404, detail="Payment not found")
+    try:
+        sub = billing.confirm_bank_transfer(db, payment)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    org = db.query(Organization).filter(Organization.id == payment.organization_id).first()
+    owner = db.query(User).filter(User.organization_id == payment.organization_id, User.role == "owner").first()
+    pkg = billing.package_for(db, payment.plan_slug)
+    if owner:
+        email_service.send_template_bg(
+            owner.email,
+            "payment_confirmed",
+            {
+                "name": org.name if org else owner.email,
+                "plan": pkg.name if pkg else payment.plan_slug,
+                "next_billing_date": sub.next_billing_date.strftime("%d %b %Y") if sub.next_billing_date else "",
+                "dashboard_url": f"{settings.FRONTEND_URL}/dashboard/billing",
+            },
+        )
+    return PaymentRow(
+        id=payment.id,
+        organization_id=payment.organization_id,
+        organization_name=org.name if org else None,
+        plan_slug=payment.plan_slug,
+        amount_cents=payment.amount_cents,
+        method=payment.method,
+        status=payment.status,
+        sandbox=payment.sandbox,
+        billplz_bill_id=payment.billplz_bill_id,
+        reference_note=payment.reference_note,
+        reported_at=payment.reported_at.isoformat() if payment.reported_at else None,
+        paid_at=payment.paid_at.isoformat() if payment.paid_at else None,
+        created_at=payment.created_at.isoformat() if payment.created_at else None,
+    )
 
 
 # ===== Homepage content (structured CMS) =====

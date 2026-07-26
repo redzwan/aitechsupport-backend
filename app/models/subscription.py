@@ -25,4 +25,10 @@ class Subscription(Base):
     tokens_used = Column(Integer, default=0, nullable=False)
     period_start = Column(DateTime, default=datetime.utcnow)
 
+    # Admin-set monthly renewal cycle (mainly for bank-transfer clients, who
+    # have no gateway subscription to derive a renewal date from).
+    start_date = Column(DateTime, nullable=True)
+    next_billing_date = Column(DateTime, nullable=True)
+    last_reminder_sent = Column(DateTime, nullable=True)
+
     created_at = Column(DateTime, default=datetime.utcnow)

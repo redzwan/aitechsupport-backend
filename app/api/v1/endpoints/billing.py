@@ -6,11 +6,19 @@ from sqlalchemy.orm import Session
 
 from app.db.session import get_db
 from app.api.deps import get_current_user
-from app.core import billing
+from app.core import billing, storage, email as email_service
 from app.models.user import User
 from app.models.organization import Organization
 from app.models.package import Package
-from app.schemas.billing import PackageOut, SubscriptionOut, SubscribeRequest, CheckoutOut
+from app.schemas.billing import (
+    PackageOut,
+    SubscriptionOut,
+    SubscribeRequest,
+    CheckoutOut,
+    BankTransferSettingsOut,
+    BankTransferReportRequest,
+    BankTransferReportOut,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +48,7 @@ def _subscription_out(db: Session, sub) -> SubscriptionOut:
         tokens_remaining=max(0, quota - (sub.tokens_used or 0)),
         max_bots=pkg.max_bots if pkg else 1,
         period_start=sub.period_start.isoformat() if sub.period_start else None,
+        next_billing_date=sub.next_billing_date.isoformat() if sub.next_billing_date else None,
     )
 
 
@@ -141,3 +150,60 @@ async def billplz_webhook(request: Request, db: Session = Depends(get_db)):
         logger.warning("rejected Billplz webhook: %s", exc)
         raise HTTPException(status_code=400, detail=str(exc))
     return {"status": result}
+
+
+# ===== Bank transfer fallback (manual, admin-confirmed) =====
+
+@router.get("/bank-transfer", response_model=BankTransferSettingsOut)
+def bank_transfer_settings(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """Bank details for the customer to pay by manual transfer, if enabled."""
+    cfg = billing.bank_transfer_config(db)
+    qr_url = None
+    if cfg["qr_object_key"] and storage.is_configured(db):
+        try:
+            qr_url = storage.inline_image_url(db, cfg["qr_object_key"], "image/png")
+        except Exception:
+            qr_url = None
+    return BankTransferSettingsOut(
+        enabled=cfg["enabled"],
+        bank_name=cfg["bank_name"],
+        account_name=cfg["account_name"],
+        account_number=cfg["account_number"],
+        qr_url=qr_url,
+        notify_channel_id=int(cfg["notify_channel_id"]) if cfg["notify_channel_id"] else None,
+        notify_whatsapp_number=cfg["notify_whatsapp_number"],
+        configured=billing.bank_transfer_is_configured(db),
+    )
+
+
+@router.post("/bank-transfer/report", response_model=BankTransferReportOut)
+def report_bank_transfer(
+    payload: BankTransferReportRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Customer reports they've made a manual bank transfer for a plan. Creates a
+    pending payment for an admin to verify and confirm — no gateway involved."""
+    pkg = billing.package_for(db, payload.package_slug)
+    if not pkg or not pkg.is_active:
+        raise HTTPException(status_code=404, detail="Package not found")
+    if user.role not in ("owner", "admin"):
+        raise HTTPException(status_code=403, detail="Only an owner can change the plan")
+    if not billing.bank_transfer_is_configured(db):
+        raise HTTPException(status_code=503, detail="Bank transfer isn't enabled — contact us to activate a paid plan.")
+
+    org = db.query(Organization).filter(Organization.id == user.organization_id).first()
+    try:
+        payment = billing.report_bank_transfer(
+            db, organization_id=user.organization_id, package=pkg, note=payload.note,
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+
+    billing.notify_admin_bank_transfer(db, payment, org.name if org else str(user.organization_id))
+    email_service.send_template_bg(
+        user.email,
+        "bank_transfer_reported",
+        {"name": org.name if org else user.email, "plan": pkg.name, "amount": f"{pkg.price_myr:.2f}"},
+    )
+    return BankTransferReportOut(payment_id=payment.id, status=payment.status)
