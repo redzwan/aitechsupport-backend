@@ -44,3 +44,37 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -
     expire = datetime.utcnow() + (expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
     to_encode.update({"exp": expire})
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+
+
+RESET_TOKEN_EXPIRE_MINUTES = 30
+
+
+def create_reset_token(user_id: int, current_hashed_password: str) -> str:
+    """Short-lived, single-purpose token for password reset.
+
+    Includes a fingerprint of the current password hash so the token is
+    invalidated automatically the moment it's used (or the password is
+    changed some other way) — no separate revocation table needed.
+    """
+    fp = hashlib.sha256(current_hashed_password.encode()).hexdigest()[:16]
+    expire = datetime.utcnow() + timedelta(minutes=RESET_TOKEN_EXPIRE_MINUTES)
+    to_encode = {"sub": str(user_id), "type": "password_reset", "pwd_fp": fp, "exp": expire}
+    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+
+
+def decode_reset_token(token: str) -> Optional[dict]:
+    """Return the token's payload if it's a validly-signed, unexpired reset
+    token, else None. Caller must still compare `pwd_fp` against the target
+    user's current hashed password before trusting it."""
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+    except Exception:  # noqa: BLE001 (jose raises several JWTError subclasses)
+        return None
+    if payload.get("type") != "password_reset":
+        return None
+    return payload
+
+
+def reset_token_matches(payload: dict, current_hashed_password: str) -> bool:
+    fp = hashlib.sha256(current_hashed_password.encode()).hexdigest()[:16]
+    return payload.get("pwd_fp") == fp

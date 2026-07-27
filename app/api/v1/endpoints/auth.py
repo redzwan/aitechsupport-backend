@@ -5,7 +5,14 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
-from app.core.security import verify_password, get_password_hash, create_access_token
+from app.core.security import (
+    verify_password,
+    get_password_hash,
+    create_access_token,
+    create_reset_token,
+    decode_reset_token,
+    reset_token_matches,
+)
 from app.core import email as email_service
 from app.core import invites as invites_core
 from app.core.settings import settings
@@ -20,6 +27,8 @@ from app.schemas.auth import (
     UserProfile,
     UpdateProfileRequest,
     ChangePasswordRequest,
+    ForgotPasswordRequest,
+    ResetPasswordRequest,
 )
 from app.schemas.invite import InvitePreview, JoinRequest, AcceptInviteRequest
 
@@ -190,6 +199,50 @@ def login(form: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account is inactive")
     token = create_access_token({"sub": str(user.id), "org": user.organization_id})
     return Token(access_token=token)
+
+
+@router.post("/forgot-password", status_code=204)
+def forgot_password(payload: ForgotPasswordRequest, background: BackgroundTasks, db: Session = Depends(get_db)):
+    """Public. Always returns 204 regardless of whether the email exists, so
+    the endpoint can't be used to enumerate registered accounts."""
+    user = db.query(User).filter(func.lower(User.email) == payload.email.strip().lower()).first()
+    if user and user.is_active:
+        token = create_reset_token(user.id, user.hashed_password)
+        reset_url = f"{settings.FRONTEND_URL}/reset-password?token={token}"
+        background.add_task(
+            email_service.send_template_bg,
+            user.email,
+            "password_reset",
+            {"name": user.full_name or user.email, "email": user.email, "reset_url": reset_url},
+        )
+
+
+@router.post("/reset-password", status_code=204)
+def reset_password(payload: ResetPasswordRequest, background: BackgroundTasks, db: Session = Depends(get_db)):
+    if len(payload.new_password) < 6:
+        raise HTTPException(status_code=422, detail="New password must be at least 6 characters")
+
+    claims = decode_reset_token(payload.token)
+    if claims is None:
+        raise HTTPException(status_code=400, detail="Invalid or expired reset link")
+    try:
+        user_id = int(claims["sub"])
+    except (KeyError, ValueError, TypeError):
+        raise HTTPException(status_code=400, detail="Invalid or expired reset link")
+
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user or not reset_token_matches(claims, user.hashed_password):
+        raise HTTPException(status_code=400, detail="Invalid or expired reset link")
+
+    user.hashed_password = get_password_hash(payload.new_password)
+    db.commit()
+
+    background.add_task(
+        email_service.send_template_bg,
+        user.email,
+        "password_changed",
+        {"name": user.full_name or user.email, "email": user.email},
+    )
 
 
 @router.get("/me", response_model=UserProfile)
