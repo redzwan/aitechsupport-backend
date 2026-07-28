@@ -8,13 +8,12 @@ at https://openrouter.ai/models).
 Which model answers a bot's question is not a customer choice — it's an ordered
 fallback chain owned by the org's package (Package.fallback_chain), tried top to
 bottom until one candidate answers successfully. A package with no chain of its
-own inherits the platform-wide one (CHAT_FALLBACK_CHAIN / DEFAULT_FALLBACK_CHAIN),
-so the Free plan can stay self-hosted while paid plans use OpenRouter. A bot's own
-chat_model column is a rare admin-only override, tried before the chain.
+own inherits the hardcoded platform default (DEFAULT_FALLBACK_CHAIN), so the Free
+plan can stay self-hosted while paid plans use OpenRouter. A bot's own chat_model
+column is a rare admin-only override, tried before the chain.
 """
 from __future__ import annotations
 
-import json
 from typing import TYPE_CHECKING
 
 from app.core import config_store
@@ -68,16 +67,9 @@ DEFAULT_FALLBACK_CHAIN: list[dict] = [
 
 
 def fallback_chain() -> list[dict]:
-    """Admin-configured chat fallback chain (CHAT_FALLBACK_CHAIN, JSON), else the
-    hardcoded default above."""
-    raw = config_store.get("CHAT_FALLBACK_CHAIN")
-    if raw:
-        try:
-            tiers = json.loads(raw)
-            if isinstance(tiers, list) and tiers:
-                return tiers
-        except (ValueError, TypeError):
-            pass
+    """The hardcoded platform default a package inherits when it has no chain of
+    its own (see chain_for_package). Not admin-editable — configure a chain per
+    package instead, under Admin -> Packages."""
     return DEFAULT_FALLBACK_CHAIN
 
 

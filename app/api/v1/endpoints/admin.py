@@ -22,7 +22,7 @@ from app.models.page import Page
 from app.models.channel import Channel
 from app.core import attachments
 from app.schemas.content import HomepageUpdate, PageAdminOut, PageCreate, PageUpdate
-from app.schemas.setting import SettingsUpdate, SettingsOut, FallbackChainOut, FallbackChainUpdate
+from app.schemas.setting import SettingsUpdate, SettingsOut
 from app.schemas.site_widget import SiteWidgetOut, SiteWidgetUpdate
 from app.schemas.storage import StorageSettingsOut, StorageSettingsUpdate
 from app.schemas.billing import (
@@ -74,6 +74,10 @@ def get_settings(db: Session = Depends(get_db), admin: User = Depends(get_platfo
         fonnte_account_token_set=bool(fonnte_tok),
         fonnte_account_token_hint=_hint(fonnte_tok),
         field_encryption_key_set=bool(config_store.get("FIELD_ENCRYPTION_KEY")),
+        embeddings_provider=config_store.get("EMBEDDINGS_PROVIDER") or "voyage",
+        embedding_model_openrouter_main=config_store.get("EMBEDDING_MODEL_OPENROUTER_MAIN"),
+        embedding_model_openrouter_fallback_1=config_store.get("EMBEDDING_MODEL_OPENROUTER_FALLBACK_1"),
+        embedding_model_openrouter_fallback_2=config_store.get("EMBEDDING_MODEL_OPENROUTER_FALLBACK_2"),
     )
 
 
@@ -91,38 +95,23 @@ def update_settings(
         "default_chat_model": "DEFAULT_CHAT_MODEL",
         "fonnte_account_token": "FONNTE_ACCOUNT_TOKEN",
         "field_encryption_key": "FIELD_ENCRYPTION_KEY",
+        "embedding_model_openrouter_main": "EMBEDDING_MODEL_OPENROUTER_MAIN",
+        "embedding_model_openrouter_fallback_1": "EMBEDDING_MODEL_OPENROUTER_FALLBACK_1",
+        "embedding_model_openrouter_fallback_2": "EMBEDDING_MODEL_OPENROUTER_FALLBACK_2",
     }
     updates: dict[str, str] = {}
     for field, key in field_to_key.items():
         value = getattr(payload, field)
         if value is not None and value.strip() != "":
             updates[key] = value.strip()
+    if payload.embeddings_provider is not None:
+        provider = payload.embeddings_provider.strip().lower()
+        if provider not in ("voyage", "openrouter"):
+            raise HTTPException(status_code=422, detail="embeddings_provider must be 'voyage' or 'openrouter'")
+        updates["EMBEDDINGS_PROVIDER"] = provider
     if updates:
         config_store.set_many(db, updates)
     return get_settings(db=db, admin=admin)
-
-
-# ===== Chat model fallback chain =====
-# Which model answers a bot's question is NOT per-bot/per-package — it's this one
-# ordered chain, tried top to bottom until a candidate answers successfully (see
-# app.core.models_catalog / app.core.llm.answer_with_fallback).
-
-@router.get("/fallback-chain", response_model=FallbackChainOut)
-def get_fallback_chain(admin: User = Depends(get_platform_admin)) -> FallbackChainOut:
-    return FallbackChainOut(tiers=models_catalog.fallback_chain())
-
-
-@router.put("/fallback-chain", response_model=FallbackChainOut)
-def update_fallback_chain(
-    payload: FallbackChainUpdate,
-    db: Session = Depends(get_db),
-    admin: User = Depends(get_platform_admin),
-) -> FallbackChainOut:
-    if not payload.tiers:
-        raise HTTPException(status_code=400, detail="At least one fallback tier is required")
-    tiers = [t.model_dump() for t in payload.tiers]
-    config_store.set_many(db, {"CHAT_FALLBACK_CHAIN": json.dumps(tiers)})
-    return FallbackChainOut(tiers=tiers)
 
 
 # ===== Support widget on our own site (aitechsupport.my) =====

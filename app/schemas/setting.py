@@ -9,6 +9,10 @@ class SettingsUpdate(BaseModel):
     default_chat_model: str | None = None
     fonnte_account_token: str | None = None
     field_encryption_key: str | None = None
+    embeddings_provider: str | None = None  # "voyage" | "openrouter"
+    embedding_model_openrouter_main: str | None = None
+    embedding_model_openrouter_fallback_1: str | None = None
+    embedding_model_openrouter_fallback_2: str | None = None
 
 
 class SettingsOut(BaseModel):
@@ -22,6 +26,10 @@ class SettingsOut(BaseModel):
     fonnte_account_token_set: bool
     fonnte_account_token_hint: str | None = None
     field_encryption_key_set: bool
+    embeddings_provider: str
+    embedding_model_openrouter_main: str
+    embedding_model_openrouter_fallback_1: str
+    embedding_model_openrouter_fallback_2: str
 
 
 class ModelOption(BaseModel):
@@ -31,8 +39,8 @@ class ModelOption(BaseModel):
 
 
 class FallbackTier(BaseModel):
-    """One rung of the platform-wide chat fallback chain, tried in order until
-    one answers successfully. Replaces per-bot/per-package model choice."""
+    """One rung of a package's chat fallback chain, tried in order until one
+    answers successfully. Set per-package under Admin -> Packages."""
     label: str
     provider: str  # "self_hosted" | "openrouter"
     base_url: str | None = None  # required for self_hosted; ignored for openrouter
@@ -49,9 +57,3 @@ class FallbackTier(BaseModel):
         return self
 
 
-class FallbackChainOut(BaseModel):
-    tiers: list[FallbackTier]
-
-
-class FallbackChainUpdate(BaseModel):
-    tiers: list[FallbackTier]

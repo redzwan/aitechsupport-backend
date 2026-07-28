@@ -20,6 +20,12 @@ MANAGED_KEYS = {
     "OLLAMA_BASE_URL": "OLLAMA_BASE_URL",
     "VOYAGE_API_KEY": "VOYAGE_API_KEY",
     "DEFAULT_CHAT_MODEL": "DEFAULT_CHAT_MODEL",
+    # Embeddings provider choice ("voyage" | "openrouter") and, when openrouter,
+    # its main + fallback model ids — see app/core/embeddings.py.
+    "EMBEDDINGS_PROVIDER": "EMBEDDINGS_PROVIDER",
+    "EMBEDDING_MODEL_OPENROUTER_MAIN": "EMBEDDING_MODEL_OPENROUTER_MAIN",
+    "EMBEDDING_MODEL_OPENROUTER_FALLBACK_1": "EMBEDDING_MODEL_OPENROUTER_FALLBACK_1",
+    "EMBEDDING_MODEL_OPENROUTER_FALLBACK_2": "EMBEDDING_MODEL_OPENROUTER_FALLBACK_2",
     # Forced for any turn carrying an image (see models_catalog.vision_model).
     "VISION_MODEL": "VISION_MODEL",
     # SMTP / email
