@@ -5,7 +5,8 @@ from pydantic import BaseModel, Field
 
 class PresenceUpdate(BaseModel):
     # The agent's intent. "busy" is also derived automatically when they own an
-    # open human chat; "away" is honored as-is; anything else normalizes to online.
+    # open human chat; "away" is honored as-is; "offline" is an explicit sign-off
+    # that clears liveness; anything else normalizes to online.
     status: str = Field(default="online")
 
 

@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 from app.db.session import get_db, SessionLocal
 from app.api.deps import get_agent_user
 from app.core.events import bus, org_topic, user_topic
+from app.core import presence
 from app.models.user import User
 from app.models.bot import Bot
 from app.models.channel import Channel
@@ -32,10 +33,9 @@ from app.schemas.game import GameCreate, MoveSend, GameOut
 router = APIRouter()
 
 QUEUE_LIMIT = 200
-# A stored "online" whose last_seen_at is older than this reads as offline — that
-# freshness check is what makes presence trustworthy (a crashed client goes offline
-# on its own). Should exceed the client heartbeat + the 20s SSE keepalive.
-HEARTBEAT_TTL = timedelta(seconds=45)
+# Presence rules live in app.core.presence — the public widget reads the same
+# heartbeat to decide whether "Talk to a human" can be offered at all.
+HEARTBEAT_TTL = presence.HEARTBEAT_TTL
 
 
 @router.get("/queue", response_model=list[QueueRow])
@@ -100,30 +100,8 @@ def _sse(obj: dict) -> str:
     return f"data: {json.dumps(obj, ensure_ascii=False)}\n\n"
 
 
-def _busy_user_ids(db: Session, org_id: int) -> set[int]:
-    """Agents currently owning an open human chat (auto-busy)."""
-    rows = (
-        db.query(Conversation.assigned_user_id)
-        .filter(
-            Conversation.organization_id == org_id,
-            Conversation.status == "human",
-            Conversation.assigned_user_id.isnot(None),
-        )
-        .distinct()
-        .all()
-    )
-    return {r[0] for r in rows}
-
-
-def _effective_status(user: User, now: datetime, is_busy: bool) -> str:
-    if user.last_seen_at is None or (now - user.last_seen_at) > HEARTBEAT_TTL:
-        return "offline"
-    stored = user.presence_status or "online"
-    if stored == "away":
-        return "away"
-    if is_busy or stored == "busy":
-        return "busy"
-    return "online"
+_busy_user_ids = presence.busy_user_ids
+_effective_status = presence.effective_status
 
 
 def _presence_event(user: User, is_busy: bool) -> dict:
@@ -168,7 +146,21 @@ def get_presence(db: Session = Depends(get_db), user: User = Depends(get_agent_u
 
 @router.put("/presence", status_code=204)
 def set_presence(payload: PresenceUpdate, db: Session = Depends(get_db), user: User = Depends(get_agent_user)):
-    """Set status + refresh liveness. Doubles as the heartbeat (call every ~25s)."""
+    """Set status + refresh liveness. Doubles as the heartbeat (call every ~25s).
+
+    "offline" is a deliberate sign-off (app backgrounded, quit, logged out) and is
+    the one status that does NOT refresh liveness — it clears last_seen_at so the
+    agent reads offline at once. Without it the visitor-facing widget would keep
+    promising a human for the length of the heartbeat window after the last agent
+    put their phone away.
+    """
+    if payload.status == "offline":
+        user.presence_status = "offline"
+        user.last_seen_at = None
+        db.commit()
+        _publish_presence(db, user)
+        return
+
     status = payload.status if payload.status in ("online", "busy", "away") else "online"
     user.presence_status = status
     user.last_seen_at = datetime.utcnow()

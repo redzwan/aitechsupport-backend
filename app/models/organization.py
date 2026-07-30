@@ -13,4 +13,10 @@ class Organization(Base):
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String, nullable=False)
     slug = Column(String, unique=True, index=True, nullable=False)
+
+    # Offline fallback contacts. Offered to visitors by the widget only while no
+    # support agent is online, so "Talk to a human" never leads to silence.
+    support_email = Column(String, nullable=True)
+    support_whatsapp = Column(String, nullable=True)
+
     created_at = Column(DateTime, default=datetime.utcnow)

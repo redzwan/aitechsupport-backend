@@ -18,11 +18,12 @@ from sqlalchemy.orm import Session
 from app.db.session import get_db, SessionLocal
 from app.core import (
     rag, embeddings, llm, billing, widget, whatsapp, limits, email, config_store, storage,
-    attachments, models_catalog, handoff,
+    attachments, models_catalog, handoff, presence,
 )
 from app.core.events import bus, conv_topic, org_topic
 from app.core.settings import settings
 from app.models.user import User
+from app.models.organization import Organization
 from app.models.conversation import Message
 from app.schemas.widget import (
     PublicChatRequest,
@@ -34,6 +35,7 @@ from app.schemas.widget import (
     ConversationMessageOut,
     ImageUploadOut,
     WhatsAppLinkResponse,
+    WidgetAvailability,
 )
 from app.schemas.site_widget import SiteWidgetPublic
 
@@ -212,6 +214,37 @@ def widget_config(public_key: str, db: Session = Depends(get_db)):
     # Appearance only supplies the look; handoff_mode comes from the bot.
     fields = {k: ap[k] for k in WidgetPublicConfig.model_fields if k in ap}
     return WidgetPublicConfig(**fields, handoff_mode=handoff.effective_mode(bot))
+
+
+@router.get("/widget/{public_key}/availability", response_model=WidgetAvailability)
+def widget_availability(public_key: str, request: Request, db: Session = Depends(get_db)):
+    """Is a human reachable right now — and if not, what should the visitor be offered?
+
+    The widget polls this to decide whether "Talk to a human" is honest. Offering
+    it while every agent is offline is worse than not offering it at all: the
+    visitor waits for a reply that nobody is there to send. When no one is on duty
+    the org's configured fallback (email / WhatsApp, set on the Support team page)
+    is returned instead, and the widget relabels the button accordingly.
+    """
+    resolved = widget.resolve_widget(db, public_key)
+    if resolved is None:
+        raise HTTPException(status_code=404, detail="Widget not found")
+    channel, _bot = resolved
+    ip = _client_ip(request)
+    if not limits.rate_limit_ok(f"{public_key}:{ip}:avail", settings.WIDGET_RATE_PER_MIN, 60):
+        raise HTTPException(status_code=429, detail="Too many requests. Please slow down.",
+                            headers={"Retry-After": "60"})
+
+    if presence.has_available_agent(db, channel.organization_id):
+        return WidgetAvailability(agents_online=True)
+
+    org = db.query(Organization).filter(Organization.id == channel.organization_id).first()
+    number = handoff.normalize_wa_number(org.support_whatsapp) if org else None
+    return WidgetAvailability(
+        agents_online=False,
+        email=(org.support_email or None) if org else None,
+        whatsapp_url=handoff.build_link(number, "Hi! I'd like to ask something.") if number else None,
+    )
 
 
 @router.get("/widget/{public_key}/whatsapp-redirect", response_model=WhatsAppLinkResponse)

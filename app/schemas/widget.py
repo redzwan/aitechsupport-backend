@@ -82,6 +82,18 @@ class WhatsAppLinkResponse(BaseModel):
     url: str | None = None
 
 
+class WidgetAvailability(BaseModel):
+    """Can the visitor reach a human right now, and if not, how else?
+
+    Polled by the widget, so it must stay cheap. The fallback contacts are only
+    populated when agents_online is false: while someone is on duty there is no
+    reason to hand the org's support address to every page the widget loads on.
+    """
+    agents_online: bool
+    email: str | None = None
+    whatsapp_url: str | None = None
+
+
 
 # ===== Dashboard (JWT, org-scoped) widget config =====
 

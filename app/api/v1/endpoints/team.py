@@ -14,9 +14,17 @@ from app.api.deps import get_org_admin
 from app.core.security import get_password_hash
 from app.core.settings import settings
 from app.core import invites as invites_core
+from app.core import handoff
 from app.models.user import User
 from app.models.org_invite import OrgInvite
-from app.schemas.team import AgentOut, AgentCreate, AgentUpdate
+from app.models.organization import Organization
+from app.schemas.team import (
+    AgentOut,
+    AgentCreate,
+    AgentUpdate,
+    SupportContactOut,
+    SupportContactUpdate,
+)
 from app.schemas.invite import InviteCreate, InviteOut
 
 router = APIRouter()
@@ -152,3 +160,59 @@ def revoke_invite(invite_id: int, db: Session = Depends(get_db), admin: User = D
         raise HTTPException(status_code=404, detail="Invite not found")
     inv.is_active = False
     db.commit()
+
+
+# ===== Offline fallback contacts =====
+#
+# The widget only offers "Talk to a human" while a support agent is actually
+# online (see app.core.presence). These two fields are what it offers instead
+# when nobody is — so an org with no fallback set has visitors hit a dead end,
+# which is why the dashboard nags for them.
+
+def _support_contact_out(org: Organization) -> SupportContactOut:
+    return SupportContactOut(
+        support_email=org.support_email,
+        support_whatsapp=org.support_whatsapp,
+        whatsapp_valid=handoff.normalize_wa_number(org.support_whatsapp) is not None,
+    )
+
+
+def _org_of(db: Session, admin: User) -> Organization:
+    org = db.query(Organization).filter(Organization.id == admin.organization_id).first()
+    if org is None:
+        raise HTTPException(status_code=404, detail="Organization not found")
+    return org
+
+
+@router.get("/support-contact", response_model=SupportContactOut)
+def get_support_contact(db: Session = Depends(get_db), admin: User = Depends(get_org_admin)):
+    """The org's offline fallback contacts."""
+    return _support_contact_out(_org_of(db, admin))
+
+
+@router.put("/support-contact", response_model=SupportContactOut)
+def update_support_contact(
+    payload: SupportContactUpdate,
+    db: Session = Depends(get_db),
+    admin: User = Depends(get_org_admin),
+):
+    """Set the offline fallback. An omitted field is left alone; an empty string clears it."""
+    org = _org_of(db, admin)
+
+    if payload.support_email is not None:
+        email = payload.support_email.strip()
+        if email and "@" not in email[1:]:
+            raise HTTPException(status_code=422, detail="That doesn't look like an email address.")
+        org.support_email = email or None
+
+    if payload.support_whatsapp is not None:
+        raw = payload.support_whatsapp.strip()
+        # Reject at the door rather than storing a number that can never produce
+        # a wa.me link — the failure would otherwise only surface to a visitor.
+        if raw and handoff.normalize_wa_number(raw) is None:
+            raise HTTPException(status_code=422, detail="That doesn't look like a WhatsApp number.")
+        org.support_whatsapp = raw or None
+
+    db.commit()
+    db.refresh(org)
+    return _support_contact_out(org)
