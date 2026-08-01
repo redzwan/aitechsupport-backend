@@ -93,20 +93,97 @@ def _prepare(
     return context, question, models_catalog.resolve_candidates(bot, package), None
 
 
+def _handoff_system(business_note: str | None, agents_online: bool) -> str:
+    """System prompt for the LLM-composed handoff message (see _compose_handoff).
+
+    Deliberately separate from _build_system: there is no CONTEXT to ground
+    against here, and the two asks (don't guess an answer / do route the
+    visitor to a human) are opposite what a grounded-answer prompt says.
+    """
+    availability = (
+        "A teammate is online right now — tell them to press the 'Talk to a "
+        "human' button in the chat header to reach a person immediately."
+        if agents_online else
+        "Nobody is online right now — ask them, in one line, to leave their "
+        "name, phone number, and email using the form so the team can follow "
+        "up as soon as someone is back."
+    )
+    note = f"\n\nHouse style to match, if useful: {business_note.strip()}" if business_note else ""
+    return (
+        "You are the support assistant for this business. A knowledge-base search "
+        "just found NOTHING relevant to the visitor's question, so you must not "
+        "guess, invent, or attempt an answer.\n\n"
+        f"{availability}\n\n"
+        "Reply in ONE OR TWO short sentences, in the SAME LANGUAGE the visitor "
+        "wrote in. Be warm but brief, and don't repeat their question back to them."
+        f"{note}"
+    )
+
+
+def _text_candidates(db: Session, bot: Bot) -> list[tuple[str, str | None]]:
+    sub = billing.get_or_create_subscription(db, bot.organization_id)
+    package = billing.package_for(db, sub.plan)
+    return models_catalog.resolve_candidates(bot, package)
+
+
+def _compose_handoff(db: Session, bot: Bot, question: str, agents_online: bool) -> tuple[str, int]:
+    """LLM-composed handoff reply: matches the visitor's language and tells them
+    whether a human is reachable right now or how to leave contact details.
+    Degrades to the raw bot.fallback_message on any failure. Always returns
+    tokens=0 to the caller (still the handoff signal) — explaining a handoff
+    isn't knowledge-based value, so it isn't billed, regardless of the small
+    real generation cost incurred here.
+    """
+    try:
+        candidates = _text_candidates(db, bot)
+        system = _handoff_system(bot.fallback_message, agents_online)
+        text, _tokens, _model = llm.handoff_message_with_fallback(system, question, candidates)
+        if text.strip():
+            return text.strip(), 0
+    except Exception:  # noqa: BLE001 — degrade to the static message, never fail the turn
+        logger.warning("handoff message composition failed for bot %s, using static fallback",
+                       bot.id, exc_info=True)
+    return (bot.fallback_message or "I don't have an answer for that yet."), 0
+
+
+def _compose_handoff_stream(db: Session, bot: Bot, question: str, agents_online: bool):
+    got_any = False
+    try:
+        candidates = _text_candidates(db, bot)
+        system = _handoff_system(bot.fallback_message, agents_online)
+        for ev in llm.handoff_message_stream_with_fallback(system, question, candidates):
+            if ev.get("type") == "delta":
+                got_any = True
+            if ev.get("type") == "final":
+                ev = {**ev, "tokens": 0}  # not billed — see _compose_handoff
+            yield ev
+        return
+    except Exception:  # noqa: BLE001
+        if got_any:
+            raise  # visitor already saw partial composed text — don't double-send
+        logger.warning("handoff stream composition failed for bot %s, using static fallback",
+                       bot.id, exc_info=True)
+    fb = bot.fallback_message or "I don't have an answer for that yet."
+    yield {"type": "delta", "text": fb}
+    yield {"type": "final", "text": fb, "tokens": 0}
+
+
 def answer_question(
     db: Session,
     bot: Bot,
     question: str,
+    agents_online: bool,
     image_key: str | None = None,
     image_mime: str | None = None,
 ) -> tuple[str, int]:
     """End-to-end: retrieve context, then generate a grounded answer.
 
-    Returns (answer, tokens_used). Nothing to answer with -> fallback, 0 tokens.
+    Returns (answer, tokens_used). Nothing to answer with -> a composed handoff
+    message (see _compose_handoff), 0 tokens.
     """
     prepared = _prepare(db, bot, question, image_key, image_mime)
     if prepared is None:
-        return (bot.fallback_message or "I don't have an answer for that yet."), 0
+        return _compose_handoff(db, bot, question, agents_online)
     context, q, candidates, image_data_url = prepared
     text, tokens, _model_used = llm.answer_with_fallback(
         bot.system_prompt or "", context, q, candidates, image_data_url=image_data_url
@@ -118,18 +195,17 @@ def answer_question_stream(
     db: Session,
     bot: Bot,
     question: str,
+    agents_online: bool,
     image_key: str | None = None,
     image_mime: str | None = None,
 ):
     """Streaming twin of answer_question. Yields {'type':'delta'|'final', ...} events;
     the terminal 'final' carries the full text + tokens for persistence/metering.
-    Nothing to answer with -> the fallback message as a single delta, 0 tokens.
+    Nothing to answer with -> the composed handoff message, streamed, 0 tokens.
     """
     prepared = _prepare(db, bot, question, image_key, image_mime)
     if prepared is None:
-        fb = bot.fallback_message or "I don't have an answer for that yet."
-        yield {"type": "delta", "text": fb}
-        yield {"type": "final", "text": fb, "tokens": 0}
+        yield from _compose_handoff_stream(db, bot, question, agents_online)
         return
     context, q, candidates, image_data_url = prepared
     yield from llm.answer_stream_with_fallback(

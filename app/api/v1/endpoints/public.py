@@ -57,7 +57,8 @@ def _sse(obj: dict) -> str:
     return f"data: {json.dumps(obj, ensure_ascii=False)}\n\n"
 
 
-def _notify_tenant(org_id: int, bot_name: str, name: str, contact_email: str, message: str) -> None:
+def _notify_tenant(org_id: int, bot_name: str, name: str, contact_email: str, message: str,
+                   phone: str | None = None) -> None:
     """Best-effort email to the org's active users that a visitor wants a human."""
     db = SessionLocal()
     try:
@@ -75,7 +76,9 @@ def _notify_tenant(org_id: int, bot_name: str, name: str, contact_email: str, me
             f'<p style="margin:0 0 14px;">A website visitor asked to talk to a human on '
             f'<strong>{html.escape(bot_name)}</strong>.</p>'
             f'<p style="margin:0 0 14px;"><strong>Name:</strong> {html.escape(name)}<br>'
-            f'<strong>Email:</strong> {html.escape(contact_email)}</p>'
+            f'<strong>Email:</strong> {html.escape(contact_email)}'
+            + (f'<br><strong>Phone:</strong> {html.escape(phone)}' if phone else "")
+            + '</p>'
             f'<p style="margin:0 0 14px;"><strong>Message</strong><br>'
             f'{html.escape(message or "(none)")}</p>'
             '<p style="margin:0;color:#64748b;">Reply to them directly, or open your dashboard inbox to respond.</p>'
@@ -348,10 +351,11 @@ def widget_chat(
 
     # Generate under the global in-flight-inference cap so the widget can never
     # monopolize the shared GPU.
+    agents_online = presence.has_available_agent(db, channel.organization_id)
     try:
         with limits.inference_slot(settings.WIDGET_MAX_CONCURRENCY):
             answer, tokens = rag.answer_question(
-                db, bot, payload.question, image_key=image_key, image_mime=image_mime
+                db, bot, payload.question, agents_online, image_key=image_key, image_mime=image_mime
             )
     except limits.AtCapacity:
         raise HTTPException(status_code=429, detail="Busy right now — please retry shortly.",
@@ -441,8 +445,9 @@ def widget_chat_stream(
                 return
             channel, bot = resolved
             org_id = channel.organization_id
+            agents_online = presence.has_available_agent(sdb, org_id)
             yield _sse({"type": "start", "session_id": session_id})
-            for ev in rag.answer_question_stream(sdb, bot, question,
+            for ev in rag.answer_question_stream(sdb, bot, question, agents_online,
                                                  image_key=image_key, image_mime=image_mime):
                 if ev["type"] == "delta":
                     yield _sse({"type": "delta", "text": ev["text"]})
@@ -592,10 +597,10 @@ def widget_handoff(
     if widget.is_blocked(db, channel, session_id, ip=ip, email=payload.email):
         raise HTTPException(status_code=403, detail="chat_unavailable")
     conv = widget.mark_handoff(db, channel, session_id, payload.name, payload.email, payload.message,
-                               ip=ip, source_url=_origin(request))
+                               phone=payload.phone, ip=ip, source_url=_origin(request))
     bus.publish(org_topic(channel.organization_id), {"type": "ping", "conv_id": conv.id})
     background.add_task(_notify_tenant, channel.organization_id, bot.name,
-                        payload.name, payload.email, payload.message or "")
+                        payload.name, payload.email, payload.message or "", phone=payload.phone)
     return HandoffResponse(ok=True, status=conv.status)
 
 

@@ -31,6 +31,7 @@ class Conversation(Base):
     # Lead-capture: set when a visitor asks for a human (website widget handoff).
     contact_name = Column(String, nullable=True)
     contact_email = Column(String, nullable=True)
+    contact_phone = Column(String, nullable=True)
     needs_human_at = Column(DateTime, nullable=True)
 
     # Live human-agent takeover: which agent (org user) owns this conversation.

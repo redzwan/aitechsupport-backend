@@ -38,6 +38,10 @@ class HandoffRequest(BaseModel):
     session_id: str | None = Field(default=None, max_length=64)
     name: str = Field(min_length=1, max_length=120)
     email: str = Field(min_length=3, max_length=200)
+    # Optional: a fastest-path-back number the visitor volunteers alongside
+    # email. Not validated as a strict phone number — unlike support_whatsapp
+    # (which must become a wa.me link), this is just displayed to the agent.
+    phone: str | None = Field(default=None, max_length=40)
     message: str | None = Field(default=None, max_length=4000)
 
     @field_validator("name", "email")
@@ -122,6 +126,7 @@ class ConversationOut(BaseModel):
     channel_kind: str | None = None
     contact_name: str | None = None
     contact_email: str | None = None
+    contact_phone: str | None = None
     source_url: str | None = None
     needs_human_at: datetime | None = None
     assigned_user_id: int | None = None

@@ -227,7 +227,7 @@ def flag_needs_human(db: Session, channel: Channel, session_id: str) -> Conversa
 
 
 def mark_handoff(db: Session, channel: Channel, session_id: str, name: str,
-                 email: str, message: str, ip: str | None = None,
+                 email: str, message: str, phone: str | None = None, ip: str | None = None,
                  source_url: str | None = None) -> Conversation:
     """Flag the visitor's conversation as needing a human + store their contact
     (lead-capture). Creates the conversation if they hadn't chatted yet."""
@@ -247,6 +247,7 @@ def mark_handoff(db: Session, channel: Channel, session_id: str, name: str,
     conv.status = "needs_human"
     conv.contact_name = (name or "").strip()[:120] or None
     conv.contact_email = (email or "").strip()[:200] or None
+    conv.contact_phone = (phone or "").strip()[:40] or None
     conv.needs_human_at = now
     conv.last_message_at = now
     if ip:

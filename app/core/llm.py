@@ -292,3 +292,125 @@ def answer_stream_with_fallback(
             if content_seen:
                 raise
     raise AllCandidatesFailed(errors)
+
+
+# ===== Handoff message composition =====
+#
+# When retrieval finds nothing, the caller used to show a single static
+# bot.fallback_message string verbatim — same wording regardless of the
+# visitor's language, and blind to whether an agent is actually online. These
+# mirror answer()/answer_with_fallback() but build their own system+user
+# messages (no CONTEXT block — there is none) and stay short on purpose: this
+# explains the handoff, it isn't meant to be a knowledge-based answer.
+
+def handoff_message(
+    system_prompt: str,
+    question: str,
+    model: str,
+    base_url: str | None = None,
+) -> tuple[str, int]:
+    resp = _client_for(None, base_url).chat.completions.create(
+        model=model,
+        max_tokens=160,
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": question},
+        ],
+    )
+    text = (resp.choices[0].message.content or "").strip()
+    tokens = (getattr(resp.usage, "total_tokens", 0) or 0) if resp.usage else 0
+    if not tokens:
+        tokens = _estimate_tokens(system_prompt, "", question, text, has_image=False)
+    return text, tokens
+
+
+def handoff_message_with_fallback(
+    system_prompt: str,
+    question: str,
+    candidates: list[tuple[str, str | None]],
+) -> tuple[str, int, str]:
+    """Try each candidate in turn; same empty-answer-is-a-failure rule as
+    answer_with_fallback so a reasoning-only response cascades to the next model."""
+    errors: list[tuple[str, Exception]] = []
+    for model, base_url in candidates:
+        started = time.monotonic()
+        try:
+            text, tokens = handoff_message(system_prompt, question, model, base_url=base_url)
+            if not text.strip():
+                raise ValueError(f"{model} returned an empty handoff message")
+            logger.info("handoff message via %s composed in %.1fs", model, time.monotonic() - started)
+            return text, tokens, model
+        except Exception as e:  # noqa: BLE001 — try the next candidate
+            logger.warning(
+                "handoff message candidate %s failed after %.1fs, trying next: %s",
+                model, time.monotonic() - started, e,
+            )
+            errors.append((model, e))
+    raise AllCandidatesFailed(errors)
+
+
+def handoff_message_stream(
+    system_prompt: str,
+    question: str,
+    model: str,
+    base_url: str | None = None,
+):
+    stream = _client_for(None, base_url).chat.completions.create(
+        model=model,
+        max_tokens=160,
+        stream=True,
+        stream_options={"include_usage": True},
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": question},
+        ],
+    )
+    parts: list[str] = []
+    tokens = 0
+    for chunk in stream:
+        if chunk.choices:
+            delta = chunk.choices[0].delta
+            piece = getattr(delta, "content", None) if delta else None
+            if piece:
+                parts.append(piece)
+                yield {"type": "delta", "text": piece}
+        usage = getattr(chunk, "usage", None)
+        if usage:
+            tokens = getattr(usage, "total_tokens", 0) or 0
+    full = "".join(parts).strip()
+    if not tokens:
+        tokens = _estimate_tokens(system_prompt, "", question, full, has_image=False)
+    yield {"type": "final", "text": full, "tokens": tokens}
+
+
+def handoff_message_stream_with_fallback(
+    system_prompt: str,
+    question: str,
+    candidates: list[tuple[str, str | None]],
+):
+    """Streaming twin, same content_seen protection as answer_stream_with_fallback:
+    only restarts on a different candidate if NOTHING has reached the visitor yet."""
+    errors: list[tuple[str, Exception]] = []
+    for model, base_url in candidates:
+        content_seen = False
+        t0 = time.monotonic()
+        try:
+            for ev in handoff_message_stream(system_prompt, question, model, base_url=base_url):
+                if ev.get("type") == "delta":
+                    content_seen = True
+                    yield ev
+                    continue
+                if not content_seen and not (ev.get("text") or "").strip():
+                    raise ValueError(f"{model} produced no handoff content")
+                yield ev
+            logger.info("handoff message via %s streamed in %.1fs", model, time.monotonic() - t0)
+            return
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "handoff message candidate %s failed after %.1fs (content_seen=%s): %s",
+                model, time.monotonic() - t0, content_seen, e,
+            )
+            errors.append((model, e))
+            if content_seen:
+                raise
+    raise AllCandidatesFailed(errors)
