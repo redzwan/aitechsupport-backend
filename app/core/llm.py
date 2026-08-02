@@ -73,7 +73,7 @@ def _client(timeout_seconds: float = TEXT_TIMEOUT_SECONDS, max_retries: int = 0,
         timeout=httpx.Timeout(timeout_seconds, connect=5.0),
         # Retrying a cold model load just multiplies an already long wait.
         max_retries=max_retries,
-        default_headers={"X-Title": "AiTechSupport"},
+        default_headers={"X-Title": "AiChatSupport"},
     )
 
 

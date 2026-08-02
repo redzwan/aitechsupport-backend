@@ -114,7 +114,7 @@ def update_settings(
     return get_settings(db=db, admin=admin)
 
 
-# ===== Support widget on our own site (aitechsupport.my) =====
+# ===== Support widget on our own site (aichatsupport.my) =====
 # Store one bot's embed key so the marketing site can load its own support
 # widget. We parse the pasted snippet and keep only the src + public key (never
 # raw HTML), so the site injects a clean, validated tag.
@@ -133,14 +133,22 @@ def _site_widget_out() -> SiteWidgetOut:
 
 
 def _valid_widget_src(src: str) -> bool:
-    """Only https URLs on our own domain may be loaded on the site."""
+    """Only https URLs on our own domain may be loaded on the site.
+
+    Accepts both the current domain and the pre-rebrand one: aitechsupport.my
+    now 301-redirects to aichatsupport.my, so an old snippet still resolves —
+    no need to force a re-paste just because the domain changed.
+    """
     try:
         u = urlparse(src)
     except ValueError:
         return False
     host = (u.hostname or "").lower()
-    return u.scheme == "https" and (
-        host == "aitechsupport.my" or host.endswith(".aitechsupport.my")
+    if u.scheme != "https":
+        return False
+    return any(
+        host == d or host.endswith(f".{d}")
+        for d in ("aichatsupport.my", "aitechsupport.my")
     )
 
 
@@ -169,7 +177,7 @@ def update_site_widget(
         if not _valid_widget_src(src):
             raise HTTPException(
                 status_code=400,
-                detail="The snippet's script src must be an https URL on aitechsupport.my.",
+                detail="The snippet's script src must be an https URL on aichatsupport.my.",
             )
         updates["SITE_WIDGET_SRC"] = src
         updates["SITE_WIDGET_PUBLIC_KEY"] = key_m.group(1).strip()

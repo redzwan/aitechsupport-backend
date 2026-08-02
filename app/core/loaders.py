@@ -16,7 +16,7 @@ from bs4 import BeautifulSoup
 
 from app.core.settings import settings
 
-_UA = "AiTechSupportBot/0.1 (+https://aitechsupport.my)"
+_UA = "AiChatSupportBot/0.1 (+https://aichatsupport.my)"
 _STRIP_TAGS = ["script", "style", "noscript", "nav", "header", "footer", "svg", "form", "iframe"]
 
 

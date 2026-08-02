@@ -1,4 +1,4 @@
-# AiTechSupport Backend Context
+# AiChatSupport Backend Context
 - Language: Python 3.12+
 - Framework: FastAPI
 - Database: PostgreSQL with the **pgvector** extension (stores KB chunk embeddings).

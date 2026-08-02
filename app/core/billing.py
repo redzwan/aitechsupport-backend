@@ -216,7 +216,7 @@ def create_checkout_bill(
         "amount": amount_cents,  # in sen
         "callback_url": f"{settings.API_BASE_URL}{api_prefix}/billing/webhook/billplz",
         "redirect_url": f"{settings.FRONTEND_URL}/dashboard/billing",
-        "description": f"AiTechSupport {package.name} plan (monthly)"[:200],
+        "description": f"AiChatSupport {package.name} plan (monthly)"[:200],
         # Redundant safety net; the Payment row is the primary bill->org/plan map.
         "reference_1": str(organization_id),
         "reference_2": package.slug,

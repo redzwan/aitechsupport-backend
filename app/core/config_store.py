@@ -59,7 +59,7 @@ MANAGED_KEYS = {
     "BANK_NOTIFY_CHANNEL_ID": "BANK_NOTIFY_CHANNEL_ID", # Channel.id whose WhatsApp device sends admin alerts
     "BANK_NOTIFY_WHATSAPP_NUMBER": "BANK_NOTIFY_WHATSAPP_NUMBER",  # admin's number to receive them
     # Google Search Console (admin SEO panel)
-    "GSC_SITE_URL": "GSC_SITE_URL",                       # e.g. sc-domain:aitechsupport.my
+    "GSC_SITE_URL": "GSC_SITE_URL",                       # e.g. sc-domain:aichatsupport.my
     "GSC_SERVICE_ACCOUNT_JSON": "GSC_SERVICE_ACCOUNT_JSON",  # service-account key JSON
     # WhatsApp (Fonnte gateway) — one platform-owned account provisions a device
     # per client bot; see app/core/fonnte.py.

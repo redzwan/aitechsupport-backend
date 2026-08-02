@@ -96,7 +96,7 @@ class Settings(BaseSettings):
     # Empty -> per-process in-memory fallback (dev / single worker).
     REDIS_URL: str = os.getenv("REDIS_URL", "")
     # Where the pasted <script src> points (the hosted bundle).
-    WIDGET_SRC_URL: str = os.getenv("WIDGET_SRC_URL", "https://cdn.aitechsupport.my/widget/v1/widget.js")
+    WIDGET_SRC_URL: str = os.getenv("WIDGET_SRC_URL", "https://aichatsupport.my/widget/v1/widget.js")
     # Per public_key + client-IP request cap, per minute.
     WIDGET_RATE_PER_MIN: int = int(os.getenv("WIDGET_RATE_PER_MIN", 20))
     # Global cap on simultaneous in-flight widget LLM calls (protects the shared GPU).
@@ -153,6 +153,9 @@ _enforce_secret_key()
 def cors_origins() -> list[str]:
     raw = os.getenv(
         "CORS_ORIGINS",
-        "http://localhost:3000,http://localhost:3200,https://aitechsupport.my",
+        # aitechsupport.my is the pre-rebrand domain: kept as a fallback origin
+        # since it now 301-redirects the pages, but any request that lands on
+        # the API directly from an old cached page/bookmark still needs to pass.
+        "http://localhost:3000,http://localhost:3200,https://aichatsupport.my,https://aitechsupport.my",
     )
     return [o.strip() for o in raw.split(",") if o.strip()]

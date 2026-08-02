@@ -1,4 +1,4 @@
-# AiTechSupport — Backend (FastAPI)
+# AiChatSupport — Backend (FastAPI)
 
 Multi-tenant support-chatbot SaaS. Businesses connect their content + WhatsApp
 number; customers ask questions; a Claude-powered RAG engine answers, with human
@@ -48,6 +48,6 @@ alembic/                migrations
 ## Deployment
 Hosted on the shared VPS (srv1275698, user `realestate`) behind nginx as a
 systemd service, deployed via a `~/deploy-backend.sh` git-pull script — same
-pattern as Realesta. Domain: `api.aitechsupport.my`.
+pattern as Realesta. Domain: `api.aichatsupport.my`.
 
 See `../PROJECT_STATE.md` for the phased roadmap and current status.

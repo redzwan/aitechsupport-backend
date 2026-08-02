@@ -1,7 +1,7 @@
 """Object storage on an AIStor / MinIO (S3-compatible) endpoint.
 
 Credentials live in config_store (admin panel), so a platform admin can point
-AiTechSupport at their bucket without a redeploy — same pattern as the SMTP
+AiChatSupport at their bucket without a redeploy — same pattern as the SMTP
 settings. Objects (original KB uploads) are stored PRIVATELY; nothing is
 public-read. Files are handed back to the dashboard via short-lived presigned
 GET URLs (see presigned_url), never a guessable public link.

@@ -1,4 +1,4 @@
-"""AiTechSupport API — FastAPI entrypoint.
+"""AiChatSupport API — FastAPI entrypoint.
 
 Run: uvicorn main:app --reload --port 8100
 """
@@ -30,4 +30,4 @@ app.include_router(api_router, prefix=settings.API_V1_STR)
 
 @app.get("/")
 def root() -> dict:
-    return {"message": "AiTechSupport API", "docs": "/docs"}
+    return {"message": "AiChatSupport API", "docs": "/docs"}

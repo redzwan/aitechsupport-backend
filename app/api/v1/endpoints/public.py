@@ -45,7 +45,7 @@ router = APIRouter()
 
 @router.get("/site-widget", response_model=SiteWidgetPublic)
 def site_widget_public() -> SiteWidgetPublic:
-    """What (if anything) support widget the aitechsupport.my site should load.
+    """What (if anything) support widget the aichatsupport.my site should load.
     Unauthenticated + non-secret: the public key is embedded on the page anyway."""
     key = config_store.get("SITE_WIDGET_PUBLIC_KEY")
     src = config_store.get("SITE_WIDGET_SRC")

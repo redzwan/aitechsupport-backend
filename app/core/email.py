@@ -31,8 +31,8 @@ _TAG_RE = re.compile(r"<[^>]+>")
 # Transactional bodies hold just the message; the professional chrome (header,
 # footer, container) is applied here in code so every email is consistent and
 # admins only edit the content.
-BRAND_NAME = "AiTechSupport"
-BRAND_URL = "https://aitechsupport.my"
+BRAND_NAME = "AiChatSupport"
+BRAND_URL = "https://aichatsupport.my"
 BRAND_ACCENT = "#4f46e5"
 _FONT = "-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif"
 
@@ -82,14 +82,14 @@ def wrap_email(inner_html: str, preheader: str = "") -> str:
         f'<tr><td style="height:4px;line-height:4px;font-size:4px;background:{BRAND_ACCENT};">&nbsp;</td></tr>'
         '<tr><td style="padding:24px 32px 6px;">'
         f'<span style="font-family:{_FONT};font-size:20px;font-weight:700;letter-spacing:-.2px;color:#0f172a;">'
-        f'AiTech<span style="color:{BRAND_ACCENT};">Support</span></span></td></tr>'
+        f'AiChat<span style="color:{BRAND_ACCENT};">Support</span></span></td></tr>'
         f'<tr><td style="padding:10px 32px 28px;font-family:{_FONT};font-size:15px;line-height:1.65;color:#334155;">'
         f'{inner_html}</td></tr>'
         '<tr><td style="padding:20px 32px;background:#f8fafc;border-top:1px solid #e9eef5;">'
         f'<p style="margin:0 0 4px;font-family:{_FONT};font-size:12px;line-height:1.6;color:#94a3b8;">'
         f'{BRAND_NAME} — AI customer support for your website &amp; WhatsApp.</p>'
         f'<p style="margin:0;font-family:{_FONT};font-size:12px;line-height:1.6;color:#94a3b8;">'
-        f'<a href="{BRAND_URL}" style="color:{BRAND_ACCENT};text-decoration:none;">aitechsupport.my</a>'
+        f'<a href="{BRAND_URL}" style="color:{BRAND_ACCENT};text-decoration:none;">aichatsupport.my</a>'
         f'&nbsp;·&nbsp;© {year} {BRAND_NAME}, built by Airevo.</p>'
         '</td></tr></table></td></tr></table></body></html>'
     )
@@ -111,7 +111,7 @@ def smtp_config(db: Session) -> dict:
         "username": g("SMTP_USERNAME"),
         "password": g("SMTP_PASSWORD"),
         "from_email": g("SMTP_FROM_EMAIL"),
-        "from_name": g("SMTP_FROM_NAME") or "AiTechSupport",
+        "from_name": g("SMTP_FROM_NAME") or "AiChatSupport",
         "security": (g("SMTP_SECURITY") or "tls").strip().lower(),  # tls | ssl | none
         "enabled": (g("SMTP_ENABLED") or "false").lower() == "true",
     }

@@ -12,7 +12,7 @@ from app.models.page import Page
 HOMEPAGE_KEY = "homepage_content"
 
 DEFAULT_HOMEPAGE: dict = {
-    "meta_title": "AiTechSupport — AI Support Chatbot for your website & WhatsApp",
+    "meta_title": "AiChatSupport — AI Support Chatbot for your website & WhatsApp",
     "meta_description": "Connect your content and let an AI assistant answer your customers 24/7 on your website, with a real human handoff when it matters.",
     "hero": {
         "badge": "Now with live human handoff",
@@ -45,26 +45,26 @@ DEFAULT_PAGES: list[dict] = [
     {
         "slug": "about",
         "title": "About us",
-        "meta_description": "About AiTechSupport — AI-powered customer support for businesses.",
+        "meta_description": "About AiChatSupport — AI-powered customer support for businesses.",
         "sort_order": 1,
-        "body": "<p>AiTechSupport helps businesses answer their customers instantly with an AI assistant "
+        "body": "<p>AiChatSupport helps businesses answer their customers instantly with an AI assistant "
                 "that learns from their own content — with a real human ready to step in when needed.</p>"
                 "<p>Edit this page in the admin dashboard (Pages).</p>",
     },
     {
         "slug": "privacy",
         "title": "Privacy Policy",
-        "meta_description": "How AiTechSupport collects, uses, and protects your data.",
+        "meta_description": "How AiChatSupport collects, uses, and protects your data.",
         "sort_order": 2,
-        "body": "<p>This Privacy Policy explains how AiTechSupport handles data. Replace this placeholder "
+        "body": "<p>This Privacy Policy explains how AiChatSupport handles data. Replace this placeholder "
                 "with your real policy in the admin dashboard (Pages).</p>",
     },
     {
         "slug": "terms",
         "title": "Terms of Service",
-        "meta_description": "The terms governing your use of AiTechSupport.",
+        "meta_description": "The terms governing your use of AiChatSupport.",
         "sort_order": 3,
-        "body": "<p>These Terms of Service govern your use of AiTechSupport. Replace this placeholder with "
+        "body": "<p>These Terms of Service govern your use of AiChatSupport. Replace this placeholder with "
                 "your real terms in the admin dashboard (Pages).</p>",
     },
 ]
