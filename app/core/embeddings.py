@@ -171,11 +171,22 @@ def _openrouter_embed(texts: list[str]) -> list[list[float]]:
             "No OpenRouter embedding model is configured (EMBEDDING_MODEL_OPENROUTER_MAIN)."
         )
     client = _openrouter_client()
+    dim = settings.EMBEDDING_DIM
     errors: list[tuple[str, Exception]] = []
     for model in models:
         try:
             resp = client.embeddings.create(model=model, input=texts)
-            return [_l2_normalize(d.embedding) for d in resp.data]
+            vectors = [d.embedding for d in resp.data]
+            # Reject a dimension mismatch here rather than letting pgvector
+            # refuse the INSERT further downstream — the DB error surfaces as a
+            # generic "ingest failed" with no hint about which model is wrong.
+            for v in vectors:
+                if len(v) != dim:
+                    raise RuntimeError(
+                        f"model '{model}' returned {len(v)}-dim vectors but the schema "
+                        f"expects {dim}; pick a {dim}-dim model or migrate the column"
+                    )
+            return [_l2_normalize(v) for v in vectors]
         except Exception as e:  # noqa: BLE001 — try the next candidate
             errors.append((model, e))
     detail = "; ".join(f"{m}: {e}" for m, e in errors)
