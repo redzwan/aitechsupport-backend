@@ -8,6 +8,9 @@
 - provider "openrouter": OpenRouter's embeddings endpoint. Requires OPENROUTER_API_KEY
                          plus a main model (EMBEDDING_MODEL_OPENROUTER_MAIN) and up
                          to two fallback models, tried in order until one succeeds.
+- provider "huggingface": Hugging Face Inference API feature-extraction. Requires
+                         HUGGINGFACE_API_KEY and a sentence-embedding model id
+                         (EMBEDDING_MODEL_HUGGINGFACE, default BAAI/bge-m3).
 - provider "fake":       deterministic, dependency-free hashing embedder for offline
                          dev/CI. It has NO real semantics (bag-of-words hashing) — it
                          only makes the ingest/retrieve pipeline runnable without a key.
@@ -94,6 +97,49 @@ def _voyage_embed(texts: list[str], input_type: str) -> list[list[float]]:
     return result.embeddings
 
 
+def _huggingface_key() -> str:
+    return config_store.get("HUGGINGFACE_API_KEY")
+
+
+def _huggingface_model() -> str:
+    return config_store.get("EMBEDDING_MODEL_HUGGINGFACE") or "BAAI/bge-m3"
+
+
+def _huggingface_embed(texts: list[str]) -> list[list[float]]:
+    """Embed via the HF Inference API's feature-extraction pipeline.
+
+    Sentence-embedding models (bge, gte, e5, ...) return one pooled vector per
+    input already, so no manual pooling is needed here.
+    """
+    import httpx  # lazy import so the app boots without the SDK configured
+
+    key = _huggingface_key()
+    if not key:
+        raise RuntimeError("HUGGINGFACE_API_KEY is not set (EMBEDDINGS_PROVIDER=huggingface).")
+    model = _huggingface_model()
+    resp = httpx.post(
+        f"https://api-inference.huggingface.co/models/{model}",
+        headers={"Authorization": f"Bearer {key}"},
+        json={"inputs": texts, "options": {"wait_for_model": True}},
+        timeout=httpx.Timeout(60.0, connect=5.0),
+    )
+    resp.raise_for_status()
+    vectors = resp.json()
+    if not isinstance(vectors, list) or len(vectors) != len(texts):
+        raise RuntimeError(
+            f"Hugging Face returned {len(vectors) if isinstance(vectors, list) else 0} "
+            f"embeddings for {len(texts)} inputs (model={model})."
+        )
+    dim = settings.EMBEDDING_DIM
+    for v in vectors:
+        if len(v) != dim:
+            raise RuntimeError(
+                f"Embedding dim mismatch: model '{model}' returned {len(v)} but the "
+                f"schema expects {dim}. Pick a {dim}-dim model or migrate."
+            )
+    return [_l2_normalize(v) for v in vectors]
+
+
 def _openrouter_key() -> str:
     return config_store.get("OPENROUTER_API_KEY")
 
@@ -160,6 +206,8 @@ def embed_documents(texts: list[str]) -> list[list[float]]:
             out.extend(_ollama_embed(chunk))
         elif provider == "openrouter":
             out.extend(_openrouter_embed(chunk))
+        elif provider == "huggingface":
+            out.extend(_huggingface_embed(chunk))
         else:
             out.extend(_voyage_embed(chunk, "document"))
     return out
@@ -174,6 +222,8 @@ def embed_query(text: str) -> list[float]:
         return _ollama_embed([text])[0]
     if provider == "openrouter":
         return _openrouter_embed([text])[0]
+    if provider == "huggingface":
+        return _huggingface_embed([text])[0]
     return _voyage_embed([text], "query")[0]
 
 
@@ -184,4 +234,6 @@ def is_configured() -> bool:
         return True
     if provider == "openrouter":
         return bool(_openrouter_key()) and bool(_openrouter_models())
+    if provider == "huggingface":
+        return bool(_huggingface_key())
     return bool(_voyage_key())

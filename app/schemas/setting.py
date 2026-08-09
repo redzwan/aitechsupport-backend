@@ -9,10 +9,12 @@ class SettingsUpdate(BaseModel):
     default_chat_model: str | None = None
     fonnte_account_token: str | None = None
     field_encryption_key: str | None = None
-    embeddings_provider: str | None = None  # "voyage" | "openrouter"
+    embeddings_provider: str | None = None  # "voyage" | "openrouter" | "huggingface"
     embedding_model_openrouter_main: str | None = None
     embedding_model_openrouter_fallback_1: str | None = None
     embedding_model_openrouter_fallback_2: str | None = None
+    huggingface_api_key: str | None = None
+    embedding_model_huggingface: str | None = None
 
 
 class SettingsOut(BaseModel):
@@ -30,6 +32,9 @@ class SettingsOut(BaseModel):
     embedding_model_openrouter_main: str
     embedding_model_openrouter_fallback_1: str
     embedding_model_openrouter_fallback_2: str
+    huggingface_api_key_set: bool
+    huggingface_api_key_hint: str | None = None
+    embedding_model_huggingface: str
 
 
 class ModelOption(BaseModel):

@@ -63,6 +63,7 @@ def get_settings(db: Session = Depends(get_db), admin: User = Depends(get_platfo
     """Current platform config. Secrets are never returned in full — only set/hint."""
     ork = config_store.get("OPENROUTER_API_KEY")
     voy = config_store.get("VOYAGE_API_KEY")
+    hf = config_store.get("HUGGINGFACE_API_KEY")
     fonnte_tok = config_store.get("FONNTE_ACCOUNT_TOKEN")
     return SettingsOut(
         openrouter_api_key_set=bool(ork),
@@ -78,6 +79,9 @@ def get_settings(db: Session = Depends(get_db), admin: User = Depends(get_platfo
         embedding_model_openrouter_main=config_store.get("EMBEDDING_MODEL_OPENROUTER_MAIN"),
         embedding_model_openrouter_fallback_1=config_store.get("EMBEDDING_MODEL_OPENROUTER_FALLBACK_1"),
         embedding_model_openrouter_fallback_2=config_store.get("EMBEDDING_MODEL_OPENROUTER_FALLBACK_2"),
+        huggingface_api_key_set=bool(hf),
+        huggingface_api_key_hint=_hint(hf),
+        embedding_model_huggingface=config_store.get("EMBEDDING_MODEL_HUGGINGFACE") or "BAAI/bge-m3",
     )
 
 
@@ -98,6 +102,8 @@ def update_settings(
         "embedding_model_openrouter_main": "EMBEDDING_MODEL_OPENROUTER_MAIN",
         "embedding_model_openrouter_fallback_1": "EMBEDDING_MODEL_OPENROUTER_FALLBACK_1",
         "embedding_model_openrouter_fallback_2": "EMBEDDING_MODEL_OPENROUTER_FALLBACK_2",
+        "huggingface_api_key": "HUGGINGFACE_API_KEY",
+        "embedding_model_huggingface": "EMBEDDING_MODEL_HUGGINGFACE",
     }
     updates: dict[str, str] = {}
     for field, key in field_to_key.items():
@@ -106,8 +112,11 @@ def update_settings(
             updates[key] = value.strip()
     if payload.embeddings_provider is not None:
         provider = payload.embeddings_provider.strip().lower()
-        if provider not in ("voyage", "openrouter"):
-            raise HTTPException(status_code=422, detail="embeddings_provider must be 'voyage' or 'openrouter'")
+        if provider not in ("voyage", "openrouter", "huggingface"):
+            raise HTTPException(
+                status_code=422,
+                detail="embeddings_provider must be 'voyage', 'openrouter', or 'huggingface'",
+            )
         updates["EMBEDDINGS_PROVIDER"] = provider
     if updates:
         config_store.set_many(db, updates)
