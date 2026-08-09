@@ -49,6 +49,11 @@ def _build_system(system_prompt: str) -> str:
 TEXT_TIMEOUT_SECONDS = 45.0
 VISION_TIMEOUT_SECONDS = 180.0
 
+# Ceiling on a generated answer. Support-chat replies are short by nature;
+# capped well below the model's max so a runaway generation doesn't blow up
+# per-message token cost (see rag.py token-usage tuning).
+ANSWER_MAX_TOKENS = 512
+
 
 def _client(timeout_seconds: float = TEXT_TIMEOUT_SECONDS, max_retries: int = 0, base_url: str | None = None):
     """Build the OpenAI-compatible client (bounded timeout so a hung model fails fast).
@@ -148,7 +153,7 @@ def answer(
     """Generate a grounded answer. Returns (text, total_tokens) for usage metering."""
     resp = _client_for(image_data_url, base_url).chat.completions.create(
         model=model,
-        max_tokens=1024,
+        max_tokens=ANSWER_MAX_TOKENS,
         messages=_messages(system_prompt, context, question, image_data_url),
     )
     text = (resp.choices[0].message.content or "").strip()
@@ -177,7 +182,7 @@ def answer_stream(
     """
     stream = _client_for(image_data_url, base_url).chat.completions.create(
         model=model,
-        max_tokens=1024,
+        max_tokens=ANSWER_MAX_TOKENS,
         stream=True,
         stream_options={"include_usage": True},
         messages=_messages(system_prompt, context, question, image_data_url),

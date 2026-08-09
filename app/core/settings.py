@@ -62,9 +62,9 @@ class Settings(BaseSettings):
     EMBED_BATCH_SIZE: int = int(os.getenv("EMBED_BATCH_SIZE", 128))
 
     # ===== Chunking =====
-    CHUNK_MAX_CHARS: int = int(os.getenv("CHUNK_MAX_CHARS", 1200))
+    CHUNK_MAX_CHARS: int = int(os.getenv("CHUNK_MAX_CHARS", 800))
     CHUNK_OVERLAP: int = int(os.getenv("CHUNK_OVERLAP", 150))
-    RETRIEVAL_TOP_K: int = int(os.getenv("RETRIEVAL_TOP_K", 6))
+    RETRIEVAL_TOP_K: int = int(os.getenv("RETRIEVAL_TOP_K", 4))
     # Hard ceiling on a single question sent to retrieval/answer.
     MAX_QUESTION_CHARS: int = int(os.getenv("MAX_QUESTION_CHARS", 4000))
 
