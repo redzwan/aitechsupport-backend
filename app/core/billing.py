@@ -297,7 +297,13 @@ def process_billplz_webhook(db: Session, data: dict) -> str:
     key = cfg["x_signature_key"]
     if not key:
         raise ValueError("no X-Signature key configured")
-    if not verify_billplz_signature(data, data.get("x_signature", ""), key):
+    received = data.get("x_signature", "")
+    if not verify_billplz_signature(data, received, key):
+        computed = hmac.new(key.encode(), billplz_signature_source(data).encode(), hashlib.sha256).hexdigest()
+        logger.warning(
+            "Billplz signature mismatch (env=%s, key_len=%d): received=%s computed=%s bill_id=%s",
+            "sandbox" if cfg["sandbox"] else "live", len(key), received, computed, data.get("id"),
+        )
         raise ValueError("invalid signature")
 
     bill_id = data.get("id")
