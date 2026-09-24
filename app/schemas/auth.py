@@ -18,6 +18,7 @@ class UserProfile(BaseModel):
     organization_id: int
     email: EmailStr
     full_name: str | None = None
+    phone: str | None = None
     role: str
     is_platform_admin: bool = False
     is_email_verified: bool = True
@@ -40,6 +41,7 @@ class CheckoutSignupRequest(BaseModel):
     organization_name: str
     email: EmailStr
     full_name: str | None = None
+    phone: str | None = None
     plan_slug: str
 
 

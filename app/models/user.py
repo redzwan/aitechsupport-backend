@@ -16,6 +16,7 @@ class User(Base):
     email = Column(String, unique=True, index=True, nullable=False)
     hashed_password = Column(String, nullable=False)
     full_name = Column(String, nullable=True)
+    phone = Column(String, nullable=True)
 
     # owner | admin | agent  (agent = human handoff operator)
     role = Column(String, default="owner", nullable=False)

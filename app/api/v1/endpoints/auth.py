@@ -109,6 +109,7 @@ def checkout_signup(payload: CheckoutSignupRequest, background: BackgroundTasks,
         email=email,
         hashed_password=get_password_hash(secrets.token_urlsafe(24)),
         full_name=(payload.full_name or "").strip() or None,
+        phone=(payload.phone or "").strip() or None,
         role="owner",
         is_email_verified=False,
     )
