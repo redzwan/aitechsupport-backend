@@ -20,6 +20,8 @@ class User(Base):
     # owner | admin | agent  (agent = human handoff operator)
     role = Column(String, default="owner", nullable=False)
     is_active = Column(Boolean, default=True, nullable=False)
+    # False only for self-serve checkout signups until they verify + set a password.
+    is_email_verified = Column(Boolean, default=True, nullable=False)
     # Platform operator (not a tenant role): may edit global settings / API keys.
     is_platform_admin = Column(Boolean, default=False, nullable=False)
 

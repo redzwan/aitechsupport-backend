@@ -20,9 +20,27 @@ class UserProfile(BaseModel):
     full_name: str | None = None
     role: str
     is_platform_admin: bool = False
+    is_email_verified: bool = True
 
     class Config:
         from_attributes = True
+
+
+class CheckEmailRequest(BaseModel):
+    email: EmailStr
+
+
+class CheckEmailResponse(BaseModel):
+    exists: bool
+
+
+class CheckoutSignupRequest(BaseModel):
+    """Single-page checkout signup: no password — one is generated, and the
+    user sets their real one via the emailed verify link."""
+    organization_name: str
+    email: EmailStr
+    full_name: str | None = None
+    plan_slug: str
 
 
 class UpdateProfileRequest(BaseModel):

@@ -1,3 +1,5 @@
+import secrets
+
 from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy import func, or_
@@ -15,6 +17,7 @@ from app.core.security import (
 )
 from app.core import email as email_service
 from app.core import invites as invites_core
+from app.core import billing
 from app.core.settings import settings
 from app.api.deps import get_current_user
 from app.models.organization import Organization
@@ -29,6 +32,9 @@ from app.schemas.auth import (
     ChangePasswordRequest,
     ForgotPasswordRequest,
     ResetPasswordRequest,
+    CheckEmailRequest,
+    CheckEmailResponse,
+    CheckoutSignupRequest,
 )
 from app.schemas.invite import InvitePreview, JoinRequest, AcceptInviteRequest
 
@@ -69,6 +75,59 @@ def register(payload: RegisterRequest, background: BackgroundTasks, db: Session 
 
     token = create_access_token({"sub": str(user.id), "org": org.id})
     return Token(access_token=token)
+
+
+@router.post("/check-email", response_model=CheckEmailResponse)
+def check_email(payload: CheckEmailRequest, db: Session = Depends(get_db)) -> CheckEmailResponse:
+    """Public: does an account already exist for this email? Powers the
+    single-page checkout (ask for a password vs. show signup fields)."""
+    email = payload.email.strip().lower()
+    exists = db.query(User).filter(func.lower(User.email) == email).first() is not None
+    return CheckEmailResponse(exists=exists)
+
+
+@router.post("/checkout-signup", status_code=204)
+def checkout_signup(payload: CheckoutSignupRequest, background: BackgroundTasks, db: Session = Depends(get_db)):
+    """Public: single-page checkout signup. No password is collected here — a
+    random one is generated (never revealed) and the user verifies their email
+    and sets their real password via the same link, reusing the reset-password
+    token/flow."""
+    email = payload.email.strip().lower()
+    if db.query(User).filter(func.lower(User.email) == email).first():
+        raise HTTPException(status_code=409, detail="Email already registered")
+
+    pkg = billing.package_for(db, payload.plan_slug)
+    if not pkg or not pkg.is_active:
+        raise HTTPException(status_code=404, detail="Plan not found")
+
+    org = Organization(name=payload.organization_name.strip(), slug=_slugify(payload.organization_name))
+    db.add(org)
+    db.flush()  # assign org.id before creating the user
+
+    user = User(
+        organization_id=org.id,
+        email=email,
+        hashed_password=get_password_hash(secrets.token_urlsafe(24)),
+        full_name=(payload.full_name or "").strip() or None,
+        role="owner",
+        is_email_verified=False,
+    )
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+
+    # Free plan applies immediately; paid plans are activated by the team after
+    # signup (self-serve payment isn't wired — see billing.subscribe).
+    billing.get_or_create_subscription(db, org.id)
+
+    token = create_reset_token(user.id, user.hashed_password)
+    verify_url = f"{settings.FRONTEND_URL}/reset-password?token={token}&verify=1"
+    background.add_task(
+        email_service.send_template_bg,
+        user.email,
+        "verify_email",
+        {"name": user.full_name or org.name, "email": user.email, "plan": pkg.name, "verify_url": verify_url},
+    )
 
 
 @router.get("/invite/{code}", response_model=InvitePreview)
@@ -235,6 +294,7 @@ def reset_password(payload: ResetPasswordRequest, background: BackgroundTasks, d
         raise HTTPException(status_code=400, detail="Invalid or expired reset link")
 
     user.hashed_password = get_password_hash(payload.new_password)
+    user.is_email_verified = True
     db.commit()
 
     background.add_task(
