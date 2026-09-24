@@ -59,6 +59,7 @@ def register(payload: RegisterRequest, background: BackgroundTasks, db: Session 
         email=payload.email,
         hashed_password=get_password_hash(payload.password),
         full_name=payload.full_name,
+        phone=(payload.phone or "").strip() or None,
         role="owner",
     )
     db.add(user)
