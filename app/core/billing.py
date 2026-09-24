@@ -256,7 +256,8 @@ def create_checkout_bill(
         "reference_2": package.slug,
     }
     try:
-        resp = httpx.post(f"{base}/v3/bills", auth=(cfg["api_key"], ""), data=body, timeout=30)
+        # Billplz's sandbox routinely takes 20s+ to answer, so keep plenty of headroom.
+        resp = httpx.post(f"{base}/v3/bills", auth=(cfg["api_key"], ""), data=body, timeout=60)
     except httpx.HTTPError as exc:
         payment.status = "failed"
         db.commit()
