@@ -629,17 +629,24 @@ def test_storage(db: Session = Depends(get_db), admin: User = Depends(get_platfo
 
 @router.get("/billplz", response_model=BillplzSettingsOut)
 def get_billplz(db: Session = Depends(get_db), admin: User = Depends(get_platform_admin)):
-    """Current Billplz config. API/signature keys are never returned in full."""
-    cfg = billing.billplz_config(db)
+    """Current Billplz config (both live and sandbox credential sets). API/
+    signature keys are never returned in full."""
+    both = billing.billplz_config_both(db)
+    live, sandbox_creds = both["live"], both["sandbox_creds"]
     return BillplzSettingsOut(
-        enabled=cfg["enabled"],
-        sandbox=cfg["sandbox"],
-        api_key_set=bool(cfg["api_key"]),
-        api_key_hint=_hint(cfg["api_key"]),
-        x_signature_key_set=bool(cfg["x_signature_key"]),
-        x_signature_key_hint=_hint(cfg["x_signature_key"]),
-        collection_id=cfg["collection_id"],
+        enabled=both["enabled"],
+        sandbox=both["sandbox"],
         configured=billing.billplz_is_configured(db),
+        live_api_key_set=bool(live["api_key"]),
+        live_api_key_hint=_hint(live["api_key"]),
+        live_x_signature_key_set=bool(live["x_signature_key"]),
+        live_x_signature_key_hint=_hint(live["x_signature_key"]),
+        live_collection_id=live["collection_id"],
+        sandbox_api_key_set=bool(sandbox_creds["api_key"]),
+        sandbox_api_key_hint=_hint(sandbox_creds["api_key"]),
+        sandbox_x_signature_key_set=bool(sandbox_creds["x_signature_key"]),
+        sandbox_x_signature_key_hint=_hint(sandbox_creds["x_signature_key"]),
+        sandbox_collection_id=sandbox_creds["collection_id"],
     )
 
 
@@ -651,13 +658,19 @@ def update_billplz(payload: BillplzSettingsUpdate, db: Session = Depends(get_db)
         updates["BILLING_ENABLED"] = "true" if payload.enabled else "false"
     if payload.sandbox is not None:
         updates["BILLPLZ_SANDBOX"] = "true" if payload.sandbox else "false"
-    if payload.api_key is not None and payload.api_key.strip():
-        updates["BILLPLZ_API_KEY"] = payload.api_key.strip()
-    if payload.x_signature_key is not None and payload.x_signature_key.strip():
-        updates["BILLPLZ_X_SIGNATURE_KEY"] = payload.x_signature_key.strip()
-    # collection_id is not secret; an explicit empty string clears it.
-    if payload.collection_id is not None:
-        updates["BILLPLZ_COLLECTION_ID"] = payload.collection_id.strip()
+    if payload.live_api_key is not None and payload.live_api_key.strip():
+        updates["BILLPLZ_API_KEY"] = payload.live_api_key.strip()
+    if payload.live_x_signature_key is not None and payload.live_x_signature_key.strip():
+        updates["BILLPLZ_X_SIGNATURE_KEY"] = payload.live_x_signature_key.strip()
+    if payload.sandbox_api_key is not None and payload.sandbox_api_key.strip():
+        updates["BILLPLZ_SANDBOX_API_KEY"] = payload.sandbox_api_key.strip()
+    if payload.sandbox_x_signature_key is not None and payload.sandbox_x_signature_key.strip():
+        updates["BILLPLZ_SANDBOX_X_SIGNATURE_KEY"] = payload.sandbox_x_signature_key.strip()
+    # collection ids are not secret; an explicit empty string clears them.
+    if payload.live_collection_id is not None:
+        updates["BILLPLZ_COLLECTION_ID"] = payload.live_collection_id.strip()
+    if payload.sandbox_collection_id is not None:
+        updates["BILLPLZ_SANDBOX_COLLECTION_ID"] = payload.sandbox_collection_id.strip()
     if updates:
         config_store.set_many(db, updates)
     return get_billplz(db=db, admin=admin)

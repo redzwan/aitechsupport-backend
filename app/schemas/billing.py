@@ -113,24 +113,36 @@ class PaymentsOut(BaseModel):
 
 class BillplzSettingsOut(BaseModel):
     """Billplz gateway config for the admin panel. Secret keys are never returned
-    in full — only whether they're set + a last-4 hint."""
+    in full — only whether they're set + a last-4 hint. Live and sandbox are
+    separate Billplz accounts, each with its own key/collection; `sandbox`
+    is just which set is currently active for checkout."""
     enabled: bool
     sandbox: bool
-    api_key_set: bool
-    api_key_hint: str | None = None
-    x_signature_key_set: bool
-    x_signature_key_hint: str | None = None
-    collection_id: str
-    configured: bool  # enabled + api key + collection all present
+    configured: bool  # the ACTIVE set has an api key + collection
+
+    live_api_key_set: bool
+    live_api_key_hint: str | None = None
+    live_x_signature_key_set: bool
+    live_x_signature_key_hint: str | None = None
+    live_collection_id: str
+
+    sandbox_api_key_set: bool
+    sandbox_api_key_hint: str | None = None
+    sandbox_x_signature_key_set: bool
+    sandbox_x_signature_key_hint: str | None = None
+    sandbox_collection_id: str
 
 
 class BillplzSettingsUpdate(BaseModel):
     """Admin submits fields to store. Omit or leave a secret blank to keep it."""
     enabled: bool | None = None
     sandbox: bool | None = None
-    api_key: str | None = None            # blank -> keep existing
-    x_signature_key: str | None = None    # blank -> keep existing
-    collection_id: str | None = None
+    live_api_key: str | None = None            # blank -> keep existing
+    live_x_signature_key: str | None = None    # blank -> keep existing
+    live_collection_id: str | None = None
+    sandbox_api_key: str | None = None            # blank -> keep existing
+    sandbox_x_signature_key: str | None = None    # blank -> keep existing
+    sandbox_collection_id: str | None = None
 
 
 class BankTransferSettingsOut(BaseModel):

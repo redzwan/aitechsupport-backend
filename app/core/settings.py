@@ -114,6 +114,9 @@ class Settings(BaseSettings):
     BILLPLZ_API_KEY: str = os.getenv("BILLPLZ_API_KEY", "")
     BILLPLZ_X_SIGNATURE_KEY: str = os.getenv("BILLPLZ_X_SIGNATURE_KEY", "")
     BILLPLZ_COLLECTION_ID: str = os.getenv("BILLPLZ_COLLECTION_ID", "")
+    BILLPLZ_SANDBOX_API_KEY: str = os.getenv("BILLPLZ_SANDBOX_API_KEY", "")
+    BILLPLZ_SANDBOX_X_SIGNATURE_KEY: str = os.getenv("BILLPLZ_SANDBOX_X_SIGNATURE_KEY", "")
+    BILLPLZ_SANDBOX_COLLECTION_ID: str = os.getenv("BILLPLZ_SANDBOX_COLLECTION_ID", "")
     BILLPLZ_SANDBOX: bool = os.getenv("BILLPLZ_SANDBOX", "True").lower() == "true"
 
     # ===== URLs =====

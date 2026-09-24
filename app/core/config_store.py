@@ -46,11 +46,17 @@ MANAGED_KEYS = {
     "STORAGE_BUCKET": "STORAGE_BUCKET",
     "STORAGE_SECURE": "STORAGE_SECURE",         # "true" | "false" (https)
     "STORAGE_ENABLED": "STORAGE_ENABLED",       # "true" | "false"
-    # Billplz payment gateway (Malaysian FPX / card collections)
+    # Billplz payment gateway (Malaysian FPX / card collections). Live and sandbox
+    # are separate Billplz accounts with their own keys + collections, so each
+    # gets its own credential set — BILLPLZ_SANDBOX just picks which one is active,
+    # letting an admin flip between them without re-entering either.
     "BILLPLZ_API_KEY": "BILLPLZ_API_KEY",
-    "BILLPLZ_X_SIGNATURE_KEY": "BILLPLZ_X_SIGNATURE_KEY",  # webhook signature secret
+    "BILLPLZ_X_SIGNATURE_KEY": "BILLPLZ_X_SIGNATURE_KEY",  # webhook signature secret (live)
     "BILLPLZ_COLLECTION_ID": "BILLPLZ_COLLECTION_ID",
-    "BILLPLZ_SANDBOX": "BILLPLZ_SANDBOX",       # "true" | "false" (test vs live)
+    "BILLPLZ_SANDBOX_API_KEY": "BILLPLZ_SANDBOX_API_KEY",
+    "BILLPLZ_SANDBOX_X_SIGNATURE_KEY": "BILLPLZ_SANDBOX_X_SIGNATURE_KEY",  # webhook signature secret (sandbox)
+    "BILLPLZ_SANDBOX_COLLECTION_ID": "BILLPLZ_SANDBOX_COLLECTION_ID",
+    "BILLPLZ_SANDBOX": "BILLPLZ_SANDBOX",       # "true" | "false" (which credential set is active)
     "BILLING_ENABLED": "BILLING_ENABLED",       # "true" | "false" (payment kill-switch)
     # Manual bank-transfer fallback (Malaysian bank account, shown alongside Billplz)
     "BANK_TRANSFER_ENABLED": "BANK_TRANSFER_ENABLED",  # "true" | "false"
@@ -79,6 +85,8 @@ SECRET_KEYS = {
     "STORAGE_SECRET_KEY",
     "BILLPLZ_API_KEY",
     "BILLPLZ_X_SIGNATURE_KEY",
+    "BILLPLZ_SANDBOX_API_KEY",
+    "BILLPLZ_SANDBOX_X_SIGNATURE_KEY",
     "GSC_SERVICE_ACCOUNT_JSON",
     "FONNTE_ACCOUNT_TOKEN",
     "FIELD_ENCRYPTION_KEY",

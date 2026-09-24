@@ -121,14 +121,48 @@ def _as_bool(raw: str, default: bool) -> bool:
 
 
 def billplz_config(db: Session | None = None) -> dict:
-    """Resolve Billplz config (DB settings first, env fallback via config_store)."""
+    """Resolve the ACTIVE Billplz credential set (DB settings first, env fallback).
+
+    Live and sandbox are separate Billplz accounts with their own key,
+    X-Signature secret and collection — BILLPLZ_SANDBOX only picks which set is
+    active, so switching modes never overwrites the other one's credentials.
+    """
+    g = config_store.get
+    sandbox = _as_bool(g("BILLPLZ_SANDBOX"), settings.BILLPLZ_SANDBOX)
+    if sandbox:
+        api_key = g("BILLPLZ_SANDBOX_API_KEY") or settings.BILLPLZ_SANDBOX_API_KEY
+        x_signature_key = g("BILLPLZ_SANDBOX_X_SIGNATURE_KEY") or settings.BILLPLZ_SANDBOX_X_SIGNATURE_KEY
+        collection_id = g("BILLPLZ_SANDBOX_COLLECTION_ID") or settings.BILLPLZ_SANDBOX_COLLECTION_ID
+    else:
+        api_key = g("BILLPLZ_API_KEY") or settings.BILLPLZ_API_KEY
+        x_signature_key = g("BILLPLZ_X_SIGNATURE_KEY") or settings.BILLPLZ_X_SIGNATURE_KEY
+        collection_id = g("BILLPLZ_COLLECTION_ID") or settings.BILLPLZ_COLLECTION_ID
+    return {
+        "api_key": api_key,
+        "x_signature_key": x_signature_key,
+        "collection_id": collection_id,
+        "sandbox": sandbox,
+        "enabled": _as_bool(g("BILLING_ENABLED"), settings.BILLING_ENABLED),
+    }
+
+
+def billplz_config_both(db: Session | None = None) -> dict:
+    """Resolve BOTH live and sandbox credential sets, for the admin panel — it
+    shows/edits each independently regardless of which one is currently active."""
     g = config_store.get
     return {
-        "api_key": g("BILLPLZ_API_KEY") or settings.BILLPLZ_API_KEY,
-        "x_signature_key": g("BILLPLZ_X_SIGNATURE_KEY") or settings.BILLPLZ_X_SIGNATURE_KEY,
-        "collection_id": g("BILLPLZ_COLLECTION_ID") or settings.BILLPLZ_COLLECTION_ID,
         "sandbox": _as_bool(g("BILLPLZ_SANDBOX"), settings.BILLPLZ_SANDBOX),
         "enabled": _as_bool(g("BILLING_ENABLED"), settings.BILLING_ENABLED),
+        "live": {
+            "api_key": g("BILLPLZ_API_KEY") or settings.BILLPLZ_API_KEY,
+            "x_signature_key": g("BILLPLZ_X_SIGNATURE_KEY") or settings.BILLPLZ_X_SIGNATURE_KEY,
+            "collection_id": g("BILLPLZ_COLLECTION_ID") or settings.BILLPLZ_COLLECTION_ID,
+        },
+        "sandbox_creds": {
+            "api_key": g("BILLPLZ_SANDBOX_API_KEY") or settings.BILLPLZ_SANDBOX_API_KEY,
+            "x_signature_key": g("BILLPLZ_SANDBOX_X_SIGNATURE_KEY") or settings.BILLPLZ_SANDBOX_X_SIGNATURE_KEY,
+            "collection_id": g("BILLPLZ_SANDBOX_COLLECTION_ID") or settings.BILLPLZ_SANDBOX_COLLECTION_ID,
+        },
     }
 
 
