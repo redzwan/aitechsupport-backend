@@ -302,8 +302,8 @@ def process_billplz_webhook(db: Session, data: dict) -> str:
     if not verify_billplz_signature(data, received, key):
         computed = hmac.new(key.encode(), billplz_signature_source(data).encode(), hashlib.sha256).hexdigest()
         logger.warning(
-            "Billplz signature mismatch (env=%s, key_len=%d): received=%s computed=%s bill_id=%s",
-            "sandbox" if cfg["sandbox"] else "live", len(key), received, computed, data.get("id"),
+            "Billplz signature mismatch (env=%s, key_len=%d): received=%s computed=%s payload=%r",
+            "sandbox" if cfg["sandbox"] else "live", len(key), received, computed, data,
         )
         raise ValueError("invalid signature")
 
