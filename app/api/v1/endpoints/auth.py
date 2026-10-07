@@ -45,12 +45,23 @@ def _slugify(name: str) -> str:
     return "".join(c.lower() if c.isalnum() else "-" for c in name).strip("-")
 
 
+def _unique_org_slug(db: Session, name: str) -> str:
+    """Organization.slug is unique, but org names aren't (two customers can both
+    be "John Doe") — suffix -2, -3, ... until free, so signup never 500s."""
+    base = _slugify(name) or "org"
+    slug, n = base, 1
+    while db.query(Organization.id).filter(Organization.slug == slug).first():
+        n += 1
+        slug = f"{base}-{n}"
+    return slug
+
+
 @router.post("/register", response_model=Token, status_code=201)
 def register(payload: RegisterRequest, background: BackgroundTasks, db: Session = Depends(get_db)) -> Token:
     if db.query(User).filter(User.email == payload.email).first():
         raise HTTPException(status_code=400, detail="Email already registered")
 
-    org = Organization(name=payload.organization_name, slug=_slugify(payload.organization_name))
+    org = Organization(name=payload.organization_name, slug=_unique_org_slug(db, payload.organization_name))
     db.add(org)
     db.flush()  # assign org.id before creating the user
 
@@ -101,7 +112,7 @@ def checkout_signup(payload: CheckoutSignupRequest, background: BackgroundTasks,
     if not pkg or not pkg.is_active:
         raise HTTPException(status_code=404, detail="Plan not found")
 
-    org = Organization(name=payload.organization_name.strip(), slug=_slugify(payload.organization_name))
+    org = Organization(name=payload.organization_name.strip(), slug=_unique_org_slug(db, payload.organization_name))
     db.add(org)
     db.flush()  # assign org.id before creating the user
 
